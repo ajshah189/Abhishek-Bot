@@ -1,0 +1,11 @@
+runtime: nodejs20
+env: standard
+entrypoint: node backend/index.js
+
+env_variables:
+  NODE_ENV: "production"
+  PORT: "8080"
+
+automatic_scaling:
+  min_instances: 1
+  max_instances: 10
