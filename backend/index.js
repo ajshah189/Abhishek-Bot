@@ -4,6 +4,7 @@ config();
 import express from 'express';
 import { telegramHandler } from './services/telegram/handler.js';
 import { reminderPoller } from './services/reminders/reminderPoller.js';
+import { weeklyScheduler } from './services/scheduler/weeklyScheduler.js';
 import { logger } from './utils/logger.js';
 import commandRoutes from './routes/commands.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
@@ -68,7 +69,7 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 // Start server
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, async () => {
   logger.info(`Server running on port ${PORT}`);
   console.log(`🚀 Telegram bot listening on port ${PORT}`);
   console.log(`📱 Webhook: ${process.env.TELEGRAM_WEBHOOK_URL}/webhook`);
@@ -77,6 +78,15 @@ const server = app.listen(PORT, () => {
     reminderPoller.start();
   } catch (e) {
     logger.error('Failed to start reminder poller', { error: e.message });
+  }
+
+  // Initialize weekly reports (wrapped in try-catch)
+  try {
+    await weeklyScheduler.initializeWeeklyReports().catch(err => {
+      logger.error('Weekly scheduler error', { error: err.message });
+    });
+  } catch (e) {
+    logger.error('Failed to initialize weekly reports', { error: e.message });
   }
 });
 
