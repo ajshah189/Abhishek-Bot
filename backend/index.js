@@ -4,7 +4,6 @@ config();
 import express from 'express';
 import { telegramHandler } from './services/telegram/handler.js';
 import { reminderPoller } from './services/reminders/reminderPoller.js';
-import { weeklyScheduler } from './services/scheduler/weeklyScheduler.js';
 import { logger } from './utils/logger.js';
 import commandRoutes from './routes/commands.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
@@ -16,6 +15,17 @@ const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET || 'your-secret';
 
 app.use(express.json());
 
+// Global error handlers
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection', { reason: String(reason), promise });
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception', { error: error.message, stack: error.stack });
+  process.exit(1);
+});
+
+// Webhook verification middleware
 app.use((req, res, next) => {
   if (req.path === '/webhook') {
     const signature = req.headers['x-telegram-bot-api-secret-sha256'];
@@ -33,12 +43,15 @@ app.use((req, res, next) => {
   next();
 });
 
+// Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date() });
 });
 
+// API routes
 app.use('/api', commandRoutes);
 
+// Telegram webhook
 app.post('/webhook', async (req, res) => {
   try {
     logger.info('Webhook received', { update_id: req.body.update_id });
@@ -50,18 +63,24 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+// Error handling
 app.use(notFoundHandler);
 app.use(errorHandler);
 
+// Start server
 const server = app.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
   console.log(`🚀 Telegram bot listening on port ${PORT}`);
   console.log(`📱 Webhook: ${process.env.TELEGRAM_WEBHOOK_URL}/webhook`);
 
-  reminderPoller.start();
-  weeklyScheduler.initializeWeeklyReports();
+  try {
+    reminderPoller.start();
+  } catch (e) {
+    logger.error('Failed to start reminder poller', { error: e.message });
+  }
 });
 
+// Graceful shutdown
 process.on('SIGTERM', () => {
   logger.info('SIGTERM received, shutting down gracefully');
   reminderPoller.stop();
@@ -70,5 +89,3 @@ process.on('SIGTERM', () => {
     process.exit(0);
   });
 });
-
-export default app;
