@@ -37,6 +37,9 @@ export class CommandHandler {
         case 'help':
           return this.handleHelp();
 
+        case 'budget':
+          return await this.handleBudget(userId, args);
+
         case 'settings':
           return this.handleSettings();
 
@@ -205,6 +208,26 @@ Just type naturally:
 - "Spent ₹450 on dinner"
 - "Remember I like Jain food"
 - "Add task: finish assignment"`;
+  }
+
+  async handleBudget(userId, args) {
+    const { budgetService } = await import('../expenses/budgetService.js');
+
+    if (args.length >= 2) {
+      const category = args[0].toLowerCase();
+      const amount = parseInt(args[1], 10);
+      if (isNaN(amount)) return 'Usage: /budget food 10000';
+      await budgetService.setBudget(userId, category, amount);
+      return `✅ ${category} budget set to ₹${amount}/month.`;
+    }
+
+    const budgets = await budgetService.getBudgets(userId);
+    let msg = '💰 Monthly Budgets\n\n';
+    for (const [cat, amt] of Object.entries(budgets)) {
+      msg += `${cat}: ₹${amt}\n`;
+    }
+    msg += '\nSet one with: /budget food 10000';
+    return msg;
   }
 
   handleSettings() {

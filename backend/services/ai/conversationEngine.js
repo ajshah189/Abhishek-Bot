@@ -79,6 +79,12 @@ export class ConversationEngine {
     await conversationMemory.addTurn(userId, 'user', message);
     await conversationMemory.addTurn(userId, 'assistant', parsed.reply);
 
+    // Append any budget warnings surfaced during actions
+    if (this._pendingWarnings && this._pendingWarnings.length) {
+      parsed.reply += '\n\n' + this._pendingWarnings.join('\n');
+      this._pendingWarnings = [];
+    }
+
     return parsed.reply;
   }
 
@@ -117,6 +123,12 @@ export class ConversationEngine {
               category: action.category || 'other',
               description: action.description || ''
             });
+            const { budgetService } = await import('../expenses/budgetService.js');
+            const warning = await budgetService.checkBudgetWarning(userId, action.category || 'other');
+            if (warning) {
+              this._pendingWarnings = this._pendingWarnings || [];
+              this._pendingWarnings.push(warning);
+            }
             break;
           }
           case 'store_memory': {
