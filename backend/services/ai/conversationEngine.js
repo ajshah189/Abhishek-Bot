@@ -20,7 +20,8 @@ You MUST respond with a single JSON object, no other text:
 {
   "reply": "your natural conversational reply to show the user",
   "actions": [
-    {"type": "create_task", "title": "...", "deadline_text": "raw date words if any", "priority": "high|medium|low"},
+    {"type": "create_task", "title": "...", "deadline_text": "raw date words if any", "recurrence_text": "raw recurrence words if any e.g. 'daily' 'every monday'", "priority": "high|medium|low"},
+    {"type": "complete_habit", "match": "words that identify which habit"},
     {"type": "create_expense", "amount": 0, "category": "food|travel|shopping|education|health|other", "description": "..."},
     {"type": "store_memory", "key": "...", "value": "..."},
     {"type": "complete_task", "match": "words that identify which task"},
@@ -159,8 +160,16 @@ export class ConversationEngine {
             await taskService.create(userId, {
               title: action.title,
               date: deadline,
-              priority: action.priority || 'medium'
+              priority: action.priority || 'medium',
+              recurrence_text: action.recurrence_text || ''
             });
+            break;
+          }
+          case 'complete_habit': {
+            const { habitService } = await import('../habits/habitService.js');
+            const habits = await habitService.getUserHabits(userId);
+            const h = habitService.matchHabit(habits, action.match);
+            if (h) await habitService.markComplete(h.id);
             break;
           }
           case 'create_expense': {

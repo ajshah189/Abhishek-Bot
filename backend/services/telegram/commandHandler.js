@@ -40,6 +40,9 @@ export class CommandHandler {
         case 'budget':
           return await this.handleBudget(userId, args);
 
+        case 'streaks':
+          return await this.handleStreaks(userId);
+
         case 'settings':
           return this.handleSettings();
 
@@ -208,6 +211,19 @@ Just type naturally:
 - "Spent ₹450 on dinner"
 - "Remember I like Jain food"
 - "Add task: finish assignment"`;
+  }
+
+  async handleStreaks(userId) {
+    const habits = await habitService.getUserHabits(userId);
+    if (!habits.length) return '🎯 No habits yet. Say "add a habit to meditate daily" to start.';
+    let msg = '🔥 Habit Streaks\n\n';
+    habits.forEach(h => {
+      const streak = h.streak || 0;
+      const flame = streak >= 7 ? '🔥' : streak >= 3 ? '✨' : '○';
+      msg += `${flame} ${h.name} — ${streak} day${streak !== 1 ? 's' : ''} (${h.frequency})\n`;
+    });
+    msg += '\nSay "done meditating" to mark one complete.';
+    return msg;
   }
 
   async handleBudget(userId, args) {
