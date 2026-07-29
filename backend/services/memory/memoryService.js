@@ -13,6 +13,7 @@ export class MemoryService {
         value: fields.value || fields.description || '',
         context: fields.context || '',
         frequency: fields.frequency || 'once',
+        always: fields.always === true,
         createdAt: new Date(),
         updatedAt: new Date()
       };

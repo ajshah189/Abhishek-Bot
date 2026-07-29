@@ -86,9 +86,8 @@ export class ConversationEngine {
       await this.clearSession(userId);
     }
 
-    const memoryBlock = memories.length
-      ? memories.map(m => `- ${m.key || m.category}: ${m.value}`).join('\n')
-      : '(none yet)';
+    const memoryBlock = this.selectMemories(memories, message)
+      .map(m => `- ${m.key || m.category}: ${m.value}`).join('\n') || '(none yet)';
 
     const taskBlock = tasks.length
       ? tasks.map((t, i) => `${i + 1}. ${t.title}${t.deadline ? ` (due ${formatDate(t.deadline)})` : ''} [${t.priority}]`).join('\n')
@@ -211,6 +210,21 @@ export class ConversationEngine {
         logger.error('Action execution failed', { action: action.type, error: error.message });
       }
     }
+  }
+
+  selectMemories(memories, message, topN = 5) {
+    if (!memories.length) return [];
+    const words = message.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    const pinned = memories.filter(m => m.always);
+    const rest = memories.filter(m => !m.always);
+    const scored = rest.map(m => {
+      const hay = `${m.key} ${m.value}`.toLowerCase();
+      const score = words.filter(w => hay.includes(w)).length;
+      return { m, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    const slots = Math.max(0, topN - pinned.length);
+    return [...pinned, ...scored.slice(0, slots).map(s => s.m)];
   }
 
   matchTask(tasks, matchText) {
