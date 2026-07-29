@@ -1,3 +1,6 @@
+import { config } from 'dotenv';
+config();
+
 import admin from 'firebase-admin';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
