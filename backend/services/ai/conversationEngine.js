@@ -1,6 +1,7 @@
 import { config } from 'dotenv';
 config();
 
+import { db } from '../../config/firebase.js';
 import { llm } from './llmAdapter.js';
 import { logger } from '../../utils/logger.js';
 import { parseDate, formatDate } from './dateParser.js';
@@ -23,7 +24,8 @@ You MUST respond with a single JSON object, no other text:
     {"type": "create_expense", "amount": 0, "category": "food|travel|shopping|education|health|other", "description": "..."},
     {"type": "store_memory", "key": "...", "value": "..."},
     {"type": "complete_task", "match": "words that identify which task"},
-    {"type": "delete_task", "match": "words that identify which task"}
+    {"type": "delete_task", "match": "words that identify which task"},
+    {"type": "ask_followup", "waiting_for": "short label for what you need", "partial": {"key": "captured so far"}}
   ]
 }
 
@@ -33,16 +35,56 @@ RULES:
 - Keep deadline_text as the user's raw words ("Friday", "tomorrow 6pm") — the system parses it.
 - Use memory and current data to give sharp, contextual replies. If they have overdue tasks, mention it.
 - If the user asks about their tasks/expenses, answer from the CURRENT DATA provided, don't invent.
-- Match tasks for complete/delete loosely by keywords from their message.`;
+- Match tasks for complete/delete loosely by keywords from their message.
+- Use ask_followup ONLY when you genuinely need one specific piece of information to act well (e.g. "plan my week" needs priorities, "set a budget" needs amounts). Do NOT ask follow-ups for simple requests you can handle directly. Never chain more than one follow-up at a time.
+- When ACTIVE FOLLOW-UP context is present in the prompt, the user's message is their answer to your previous question — use that partial data plus their answer to complete the goal, do NOT ask again.`;
 
 export class ConversationEngine {
+  // --- Session helpers (Firestore: settings/session_{userId}) ---
+
+  async getSession(userId) {
+    try {
+      const doc = await db.collection('settings').doc(`session_${userId}`).get();
+      return doc.exists ? doc.data() : null;
+    } catch (error) {
+      logger.error('Failed to read session', { error: error.message });
+      return null;
+    }
+  }
+
+  async setSession(userId, data) {
+    try {
+      await db.collection('settings').doc(`session_${userId}`).set(data);
+    } catch (error) {
+      logger.error('Failed to write session', { error: error.message });
+    }
+  }
+
+  async clearSession(userId) {
+    try {
+      await db.collection('settings').doc(`session_${userId}`).delete();
+    } catch (error) {
+      logger.error('Failed to clear session', { error: error.message });
+    }
+  }
+
+  // --- Main entry point ---
+
   async process(userId, chatId, message) {
-    const [recentTurns, memories, tasks, expenseSummary] = await Promise.all([
+    // Fetch context + any pending follow-up session in parallel
+    const [recentTurns, memories, tasks, expenseSummary, pendingSession] = await Promise.all([
       conversationMemory.getRecentTurns(userId),
       memoryService.getUserMemories(userId),
       taskService.getUserTasks(userId, 'pending'),
-      expenseService.getMonthlySummary(userId)
+      expenseService.getMonthlySummary(userId),
+      this.getSession(userId)
     ]);
+
+    // If there's an active follow-up, clear it now — executeActions will re-set
+    // it if the LLM decides it needs another round, or leave it cleared if resolved.
+    if (pendingSession) {
+      await this.clearSession(userId);
+    }
 
     const memoryBlock = memories.length
       ? memories.map(m => `- ${m.key || m.category}: ${m.value}`).join('\n')
@@ -56,7 +98,12 @@ export class ConversationEngine {
       ? Object.entries(expenseSummary).map(([c, a]) => `${c}: ₹${a}`).join(', ')
       : '(no expenses this month)';
 
-    const contextMessage = `LONG-TERM MEMORY:\n${memoryBlock}\n\nCURRENT PENDING TASKS:\n${taskBlock}\n\nTHIS MONTH'S SPENDING:\n${expenseBlock}\n\nUSER MESSAGE: ${message}`;
+    // Inject pending session context so the LLM knows it's receiving an answer
+    const sessionBlock = pendingSession
+      ? `\nACTIVE FOLLOW-UP:\nGoal: ${pendingSession.waiting_for}\nPartial data: ${JSON.stringify(pendingSession.partial || {})}\nThe user is now answering your question — use this to complete the goal.\n`
+      : '';
+
+    const contextMessage = `LONG-TERM MEMORY:\n${memoryBlock}\n\nCURRENT PENDING TASKS:\n${taskBlock}\n\nTHIS MONTH'S SPENDING:\n${expenseBlock}${sessionBlock}\n\nUSER MESSAGE: ${message}`;
 
     const messages = [
       { role: 'system', content: SYSTEM_PROMPT },
@@ -147,6 +194,14 @@ export class ConversationEngine {
           case 'delete_task': {
             const t = this.matchTask(currentTasks, action.match);
             if (t) await taskService.delete(t.id);
+            break;
+          }
+          case 'ask_followup': {
+            await this.setSession(userId, {
+              waiting_for: action.waiting_for || 'info',
+              partial: action.partial || {},
+              createdAt: new Date()
+            });
             break;
           }
           default:
