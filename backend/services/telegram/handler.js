@@ -10,7 +10,18 @@ export class TelegramHandler {
     try {
       const userId = extractUserId(update);
       const chatId = extractChatId(update);
-      const message = extractUserMessage(update);
+      let message = extractUserMessage(update);
+
+      // Handle voice notes: transcribe, then treat as a normal text message
+      if (!message && update.message?.voice) {
+        await telegramService.sendMessage(chatId, '🎤 Listening...');
+        const { voiceTranscriber } = await import('../voice/voiceTranscriber.js');
+        message = await voiceTranscriber.transcribeTelegramVoice(update.message.voice.file_id);
+        if (!message) {
+          await telegramService.sendMessage(chatId, "Couldn't catch that — try again?");
+          return { ok: true };
+        }
+      }
 
       if (!userId || !chatId || !message) {
         return { ok: true };

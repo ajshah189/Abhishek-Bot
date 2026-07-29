@@ -1,40 +1,46 @@
-import { llm } from '../ai/llmAdapter.js';
-import { intentExtractor } from '../ai/intentExtractor.js';
+import { config } from 'dotenv';
+config();
+
+import axios from 'axios';
+import FormData from 'form-data';
+import { getTelegramApiUrl, telegramConfig } from '../../config/telegram.js';
 import { logger } from '../../utils/logger.js';
 
 export class VoiceTranscriber {
-  async transcribeAndProcess(audioBuffer, mimeType = 'audio/ogg') {
+  async transcribeTelegramVoice(fileId) {
     try {
-      logger.info('Voice transcription requested', { mimeType });
+      // 1. Get the file path from Telegram
+      const fileRes = await axios.get(getTelegramApiUrl('getFile'), {
+        params: { file_id: fileId }
+      });
+      const filePath = fileRes.data.result.file_path;
 
-      const transcript = 'Voice transcription requires Speech-to-Text integration';
+      // 2. Download the actual audio bytes
+      const downloadUrl = `https://api.telegram.org/file/bot${telegramConfig.botToken}/${filePath}`;
+      const audioRes = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
 
-      const intent = await intentExtractor.extract(transcript);
+      // 3. Send to Groq Whisper via raw HTTP (most reliable in Node)
+      const form = new FormData();
+      form.append('file', Buffer.from(audioRes.data), { filename: 'voice.ogg' });
+      form.append('model', 'whisper-large-v3-turbo');
 
-      return {
-        transcript,
-        intent: intent.intent,
-        fields: intent.fields,
-        confidence: intent.confidence
-      };
-    } catch (error) {
-      logger.error('Failed to transcribe voice', { error: error.message });
-      throw error;
-    }
-  }
-
-  async extractTasksFromVoice(transcript) {
-    try {
-      const extraction = await llm.call(
-        'Extract any tasks, reminders, or notes from this voice note.',
-        `Voice transcript: "${transcript}"`,
-        0.5
+      const raw = await axios.post(
+        'https://api.groq.com/openai/v1/audio/transcriptions',
+        form,
+        {
+          headers: {
+            ...form.getHeaders(),
+            Authorization: `Bearer ${process.env.GROQ_API_KEY}`
+          }
+        }
       );
 
-      return extraction;
+      const text = raw.data?.text?.trim();
+      logger.info('Voice transcribed', { length: text?.length || 0 });
+      return text || null;
     } catch (error) {
-      logger.error('Failed to extract tasks from voice', { error: error.message });
-      throw error;
+      logger.error('Voice transcription failed', { error: error.message });
+      return null;
     }
   }
 }
