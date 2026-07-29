@@ -10,7 +10,7 @@ export class TaskService {
         userId: userId.toString(),
         title: fields.title || 'Untitled Task',
         description: fields.description || '',
-        deadline: fields.date ? new Date(fields.date) : null,
+        deadline: fields.date ? new Date(fields.date) : (fields.deadline ? new Date(fields.deadline) : null),
         priority: fields.priority || 'medium',
         status: 'pending',
         estimatedDuration: fields.estimatedDuration || 0,
