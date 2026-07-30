@@ -7,40 +7,31 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // ── Global error guards ────────────────────────────────────────────────────
-// Must be registered before any import that can fail, so background-job
-// errors never kill the HTTP server.
+// Registered before any import that can fail so background-job errors
+// never kill the HTTP server.
 
 process.on('exit', (code) => {
-  // Visible in Cloud Run logs — tells us the exit code and when the process ended.
   console.log(`PROCESS EXITING code=${code} time=${new Date().toISOString()}`);
 });
 
 process.on('uncaughtException', (err) => {
   console.error('UNCAUGHT_EXCEPTION (server stays up):', err.message, err.stack);
-  // Do NOT call process.exit here — a background error must not kill the server.
 });
 
 process.on('unhandledRejection', (reason) => {
   console.error('UNHANDLED_REJECTION (server stays up):', reason);
-  // Do NOT call process.exit here.
 });
 
-// ── Express app ────────────────────────────────────────────────────────────
+// ── Express routes ─────────────────────────────────────────────────────────
 
 app.use(express.json());
 
-// Root — Cloud Run startup/liveness probe hits GET / by default
-app.get('/', (req, res) => {
-  res.json({ status: 'ok' });
-});
+// Cloud Run startup/liveness probe hits GET / by default
+app.get('/', (req, res) => res.json({ status: 'ok' }));
+app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
 
-// Explicit health-check path
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date() });
-});
-
-// Telegram webhook — telegramHandler is lazy-loaded so a Firebase init
-// failure is a per-request 500, not a startup crash
+// Telegram webhook — handler lazy-loaded so Firebase init failure is a
+// per-request 500, not a startup crash
 app.post('/webhook', async (req, res) => {
   console.log('WEBHOOK_IN:', JSON.stringify(req.body).slice(0, 100));
   try {
@@ -54,28 +45,55 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// 404 catch-all
 app.use((req, res) => res.status(404).json({ error: 'not found' }));
 
-// ── Start ──────────────────────────────────────────────────────────────────
-// Nothing below this line should throw synchronously or reject unhandled.
-// Background jobs (reminderPoller, weeklyScheduler) are intentionally
-// NOT started here — they require an always-on Cloud Run instance and
-// will be wired in after stable deployment is confirmed.
+// ── Start server ───────────────────────────────────────────────────────────
 
 const server = app.listen(PORT, () => {
   console.log(`BOOT_OK port=${PORT} time=${new Date().toISOString()}`);
+  // Start background jobs AFTER the HTTP server is listening.
+  // Each is wrapped in try/catch — any failure logs and continues.
+  startBackgroundJobs();
 });
 
-// Graceful SIGTERM (Cloud Run sends this to drain the instance)
+async function startBackgroundJobs() {
+  // 1. Reminder poller (due reminders + deadline nudges every 60s)
+  try {
+    const { reminderPoller } = await import('./services/reminders/reminderPoller.js');
+    reminderPoller.start();
+    console.log('POLLER_STARTED');
+  } catch (err) {
+    console.error('POLLER_START_FAILED:', err.message);
+  }
+
+  // 2. Weekly report scheduler (Sunday 10:00 IST per user)
+  try {
+    const { weeklyScheduler } = await import('./services/scheduler/weeklyScheduler.js');
+    await weeklyScheduler.initializeWeeklyReports();
+    console.log('WEEKLY_SCHEDULER_STARTED');
+  } catch (err) {
+    console.error('WEEKLY_SCHEDULER_FAILED:', err.message);
+  }
+
+  // 3. Proactive daily/evening briefs (node-cron, per-user IST times)
+  try {
+    const { proactiveScheduler } = await import('./services/scheduler/proactiveScheduler.js');
+    await proactiveScheduler.start();
+    console.log('PROACTIVE_SCHEDULER_STARTED');
+  } catch (err) {
+    console.error('PROACTIVE_SCHEDULER_FAILED:', err.message);
+  }
+}
+
+// ── Graceful shutdown ──────────────────────────────────────────────────────
+
 process.on('SIGTERM', () => {
   const ts = new Date().toISOString();
-  console.log(`SIGTERM_RECEIVED time=${ts} — beginning graceful drain`);
+  console.log(`SIGTERM_RECEIVED time=${ts} — draining`);
   server.close(() => {
     console.log('SERVER_CLOSED — exiting cleanly');
     process.exit(0);
   });
-  // Force-exit after 10s if existing connections don't drain in time
   setTimeout(() => {
     console.log('FORCE_EXIT after drain timeout');
     process.exit(0);
