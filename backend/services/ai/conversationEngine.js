@@ -78,13 +78,14 @@ export class ConversationEngine {
 
   async process(userId, chatId, message) {
     // Fetch context + any pending follow-up session in parallel
-    const [recentTurns, memories, tasks, expenseSummary, pendingSession, calendarContext] = await Promise.all([
+    const [recentTurns, memories, tasks, expenseSummary, pendingSession, calendarContext, activeDoc] = await Promise.all([
       conversationMemory.getRecentTurns(userId),
       memoryService.getUserMemories(userId),
       taskService.getUserTasks(userId, 'pending'),
       expenseService.getMonthlySummary(userId),
       this.getSession(userId),
-      this.getCalendarContext(userId)
+      this.getCalendarContext(userId),
+      this.getActiveDocContext(userId)
     ]);
 
     // If there's an active follow-up, clear it now — executeActions will re-set
@@ -109,7 +110,7 @@ export class ConversationEngine {
       ? `\nACTIVE FOLLOW-UP:\nGoal: ${pendingSession.waiting_for}\nPartial data: ${JSON.stringify(pendingSession.partial || {})}\nThe user is now answering your question — use this to complete the goal.\n`
       : '';
 
-    const contextMessage = `LONG-TERM MEMORY:\n${memoryBlock}\n\nCURRENT PENDING TASKS:\n${taskBlock}\n\nTHIS MONTH'S SPENDING:\n${expenseBlock}${calendarContext}${sessionBlock}\n\nUSER MESSAGE: ${message}`;
+    const contextMessage = `LONG-TERM MEMORY:\n${memoryBlock}\n\nCURRENT PENDING TASKS:\n${taskBlock}\n\nTHIS MONTH'S SPENDING:\n${expenseBlock}${calendarContext}${activeDoc}${sessionBlock}\n\nUSER MESSAGE: ${message}`;
 
     const messages = [
       { role: 'system', content: SYSTEM_PROMPT },
@@ -261,6 +262,19 @@ export class ConversationEngine {
       } catch (error) {
         logger.error('Action execution failed', { action: action.type, error: error.message });
       }
+    }
+  }
+
+  async getActiveDocContext(userId) {
+    try {
+      const { pdfService } = await import('../documents/pdfService.js');
+      const doc = await pdfService.getActiveDoc(userId);
+      if (!doc) return '';
+      // Extend TTL since user is still interacting
+      pdfService.touchActiveDoc(userId).catch(() => {});
+      return `\n\nACTIVE DOCUMENT (user uploaded this PDF — answer questions about it using this content):\nSummary: ${doc.summary}\n\nContent excerpt:\n${doc.text}`;
+    } catch {
+      return '';
     }
   }
 

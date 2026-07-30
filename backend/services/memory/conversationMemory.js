@@ -41,4 +41,27 @@ export class ConversationMemory {
   }
 }
 
+  async clearHistory(userId) {
+    try {
+      let deleted = 0;
+      let snapshot;
+      do {
+        snapshot = await db
+          .collection('conversation_logs')
+          .where('userId', '==', userId.toString())
+          .limit(500)
+          .get();
+        if (snapshot.empty) break;
+        const batch = db.batch();
+        snapshot.docs.forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+        deleted += snapshot.docs.length;
+      } while (!snapshot.empty);
+      logger.info('Conversation history cleared', { userId, deleted });
+    } catch (error) {
+      logger.error('Failed to clear conversation history', { error: error.message });
+    }
+  }
+}
+
 export const conversationMemory = new ConversationMemory(10);

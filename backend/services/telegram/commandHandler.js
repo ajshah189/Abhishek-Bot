@@ -6,6 +6,8 @@ import { searchService } from '../search/searchService.js';
 import { analyticsService } from '../analytics/analyticsService.js';
 import { logger } from '../../utils/logger.js';
 import { telegramService } from './telegramService.js';
+import { db } from '../../config/firebase.js';
+import { llm } from '../ai/llmAdapter.js';
 
 export class CommandHandler {
   async handle(userId, chatId, command, args) {
@@ -47,8 +49,17 @@ export class CommandHandler {
         case 'cleanhabits':
           return await this.handleCleanHabits(userId);
 
+        case 'today':
+          return await this.handleToday(userId);
+
+        case 'clear':
+          return await this.handleClear(userId);
+
         case 'connectcalendar':
           return await this.handleConnectCalendar(userId, chatId);
+
+        case 'disconnectcalendar':
+          return await this.handleDisconnectCalendar(userId);
 
         case 'calendar':
           return await this.handleCalendar(userId);
@@ -196,43 +207,47 @@ export class CommandHandler {
   }
 
   handleHelp() {
-    return `🤖 Abhishek Assistant - Commands
+    return `Abhishek Assistant - Commands
 
-📋 *Tasks*
-/tasks - Show pending tasks
-/daily - Daily brief
+Daily
+/today - Combined day view (calendar + tasks + habits + spend)
+/daily - Morning brief
 /evening - Evening review
 
-💰 *Expenses*
+Tasks
+/tasks - Show pending tasks
+
+Expenses
 /expenses - Monthly summary
 /budget [category amount] - View or set budgets
 
-🎯 *Habits*
+Habits
 /habits - Show all habits
 /streaks - Habit streak tracker
 /cleanhabits - Remove duplicate habits
 
-🗓 *Calendar*
+Calendar
 /connectcalendar - Link Google Calendar
+/disconnectcalendar - Unlink Google Calendar
 /calendar - Today's schedule
 /upcoming - Next 10 events
 
-📊 *Analytics*
+Analytics
 /weekly - Weekly report
 
-🔍 *Search*
+Search
 /search <query> - Search all data
 
-⚙️ *Settings*
+Utilities
+/clear - Reset conversation memory
 /settings - Manage settings
 
-💬 *Natural Commands*
 Just type naturally:
 - "Meeting with Riya tomorrow at 4pm"
-- "Gym tomorrow 6"
-- "Spent ₹450 on dinner"
+- "Spent 450 on dinner"
 - "Remember I like Jain food"
-- "Add task: finish assignment"`;
+- Upload a PDF to summarize and ask questions
+- Send a photo of a receipt to auto-log it`;
   }
 
   async handleConnectCalendar(userId, chatId) {
@@ -318,6 +333,89 @@ Just type naturally:
     }
     msg += '\nSet one with: /budget food 10000';
     return msg;
+  }
+
+  async handleToday(userId) {
+    const { habitService } = await import('../habits/habitService.js');
+    const { googleCalendarService } = await import('../calendar/googleCalendarService.js');
+    const { formatDate } = await import('../ai/dateParser.js');
+
+    const todayIST = new Date(Date.now() + (5.5 * 60 * 60 * 1000));
+    const todayStr = todayIST.toISOString().slice(0, 10);
+
+    const [tasks, expenseSummary, habits, calendarResult] = await Promise.all([
+      taskService.getUserTasks(userId, 'pending'),
+      expenseService.getMonthlySummary(userId),
+      habitService.getUserHabits(userId),
+      googleCalendarService.listTodayEvents(userId).catch(() => null)
+    ]);
+
+    // Calendar events
+    let calendarBlock = 'Calendar: not connected';
+    let calendarFootnote = ' Connect your calendar with /connectcalendar for a fuller picture.';
+    if (Array.isArray(calendarResult) && calendarResult.length) {
+      calendarBlock = calendarResult.map(e => {
+        const t = new Date(e.start);
+        const time = isNaN(t) ? e.start : t.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+        return `${e.title} at ${time}`;
+      }).join(', ');
+      calendarFootnote = '';
+    } else if (Array.isArray(calendarResult)) {
+      calendarBlock = 'Calendar: no events today';
+      calendarFootnote = '';
+    }
+
+    // Tasks due today
+    const dueTodayTasks = tasks.filter(t => {
+      if (!t.deadline) return false;
+      const d = new Date(t.deadline?.toDate ? t.deadline.toDate() : t.deadline);
+      return d.toISOString().slice(0, 10) === todayStr;
+    });
+    const taskBlock = tasks.length
+      ? `${tasks.length} pending task(s)${dueTodayTasks.length ? `, ${dueTodayTasks.length} due today: ${dueTodayTasks.map(t => t.title).join(', ')}` : ''}`
+      : 'no pending tasks';
+
+    // Habits
+    const habitBlock = habits.length
+      ? habits.map(h => `${h.name} (streak: ${h.streak || 0})`).join(', ')
+      : 'no habits set';
+
+    // Spend
+    const totalSpend = Object.values(expenseSummary).reduce((s, v) => s + v, 0);
+    const spendBlock = totalSpend > 0 ? `Rs.${Math.round(totalSpend)} spent this month` : 'no expenses logged this month';
+
+    const dataPrompt = `Today's data for Abhishek:
+Calendar: ${calendarBlock}
+Tasks: ${taskBlock}
+Habits: ${habitBlock}
+Spending: ${spendBlock}`;
+
+    const summary = await llm.call(
+      'You are a crisp chief-of-staff. Summarize the user\'s day in 3-5 sentences: what\'s on their calendar, what tasks need attention, which habits to track, and a spending note. Be specific with names and times. No filler phrases.',
+      dataPrompt,
+      0.5
+    );
+
+    return summary + calendarFootnote;
+  }
+
+  async handleClear(userId) {
+    const { conversationMemory } = await import('../memory/conversationMemory.js');
+    await Promise.all([
+      conversationMemory.clearHistory(userId),
+      db.collection('settings').doc(`session_${userId}`).delete().catch(() => {})
+    ]);
+    return 'Conversation memory cleared. Fresh start.';
+  }
+
+  async handleDisconnectCalendar(userId) {
+    try {
+      await db.collection('google_tokens').doc(userId.toString()).delete();
+      return 'Google Calendar disconnected. Use /connectcalendar to connect a different account.';
+    } catch (err) {
+      logger.error('handleDisconnectCalendar failed', { error: err.message });
+      return 'Could not disconnect. Try again.';
+    }
   }
 
   handleSettings() {

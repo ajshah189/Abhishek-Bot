@@ -12,7 +12,7 @@ export class TelegramHandler {
       const chatId = extractChatId(update);
       let message = extractUserMessage(update);
 
-      // Handle voice notes: transcribe, then treat as a normal text message
+      // ── Voice notes: transcribe → treat as text ───────────────────────────
       if (!message && update.message?.voice) {
         await telegramService.sendMessage(chatId, '🎤 Listening...');
         const { voiceTranscriber } = await import('../voice/voiceTranscriber.js');
@@ -23,13 +23,68 @@ export class TelegramHandler {
         }
       }
 
-      if (!userId || !chatId || !message) {
-        return { ok: true };
-      }
+      if (!userId || !chatId) return { ok: true };
 
       await this.ensureUser(userId, update);
 
-      // Slash commands go to the command handler
+      // ── PDF documents ─────────────────────────────────────────────────────
+      if (update.message?.document?.mime_type === 'application/pdf') {
+        const doc = update.message.document;
+        await telegramService.sendMessage(chatId, '📄 Reading your PDF...');
+        try {
+          const { pdfService } = await import('../documents/pdfService.js');
+          const result = await pdfService.processUpload(userId, doc.file_id, doc.file_name);
+          if (result.error) {
+            await telegramService.sendMessage(chatId, result.message);
+          } else {
+            await telegramService.sendMessage(
+              chatId,
+              `📄 ${result.filename}\n\n${result.summary}\n\nAsk me anything about this document.`
+            );
+          }
+        } catch (err) {
+          logger.error('PDF processing failed', { error: err.message });
+          await telegramService.sendMessage(chatId, "Couldn't read that PDF — try a text-based one (scanned PDFs aren't supported yet).");
+        }
+        return { ok: true };
+      }
+
+      // ── Photos / receipts ─────────────────────────────────────────────────
+      if (update.message?.photo) {
+        const largest = update.message.photo[update.message.photo.length - 1];
+        await telegramService.sendMessage(chatId, '📸 Analyzing image...');
+        try {
+          const { visionService } = await import('../ai/visionService.js');
+          const result = await visionService.processPhoto(userId, largest.file_id);
+          if (!result) {
+            await telegramService.sendMessage(chatId, "Image received but I can't analyze images right now.");
+          } else if (result.is_receipt) {
+            const { expenseService } = await import('../expenses/expenseService.js');
+            const { budgetService } = await import('../expenses/budgetService.js');
+            await expenseService.create(userId, {
+              amount: result.amount,
+              category: result.category || 'other',
+              description: result.items || '',
+              merchant: result.merchant || 'Unknown'
+            });
+            const warning = await budgetService.checkBudgetWarning(userId, result.category || 'other');
+            let msg = `📸 Receipt detected: Rs.${result.amount} at ${result.merchant || 'Unknown'} (${result.category || 'other'}). Logged.`;
+            if (warning) msg += `\n\n${warning}`;
+            await telegramService.sendMessage(chatId, msg);
+          } else {
+            const desc = result.description || 'something interesting';
+            await telegramService.sendMessage(chatId, `I see ${desc}. What would you like me to do with this?`);
+          }
+        } catch (err) {
+          logger.error('Photo processing failed', { error: err.message });
+          await telegramService.sendMessage(chatId, "Image received but I can't analyze images right now.");
+        }
+        return { ok: true };
+      }
+
+      if (!message) return { ok: true };
+
+      // ── Slash commands ────────────────────────────────────────────────────
       if (message.startsWith('/')) {
         const [command, ...args] = message.split(' ');
         const response = await commandHandler.handle(userId, chatId, command, args);
@@ -39,7 +94,7 @@ export class TelegramHandler {
         return { ok: true };
       }
 
-      // Everything else goes through the conversation brain
+      // ── Conversation brain ────────────────────────────────────────────────
       const reply = await conversationEngine.process(userId, chatId, message);
       await telegramService.sendMessage(chatId, reply);
 
