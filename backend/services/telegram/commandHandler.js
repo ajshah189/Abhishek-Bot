@@ -43,6 +43,9 @@ export class CommandHandler {
         case 'streaks':
           return await this.handleStreaks(userId);
 
+        case 'cleanhabits':
+          return await this.handleCleanHabits(userId);
+
         case 'settings':
           return this.handleSettings();
 
@@ -211,6 +214,12 @@ Just type naturally:
 - "Spent ₹450 on dinner"
 - "Remember I like Jain food"
 - "Add task: finish assignment"`;
+  }
+
+  async handleCleanHabits(userId) {
+    const deleted = await habitService.deduplicateForUser(userId);
+    if (deleted === 0) return '✅ No duplicate habits found.';
+    return `🧹 Removed ${deleted} duplicate habit${deleted !== 1 ? 's' : ''}. Run /streaks to see the clean list.`;
   }
 
   async handleStreaks(userId) {

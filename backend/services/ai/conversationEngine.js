@@ -23,6 +23,7 @@ You MUST respond with a single JSON object, no other text:
     {"type": "create_task", "title": "...", "deadline_text": "raw date words if any", "recurrence_text": "raw recurrence words if any e.g. 'daily' 'every monday'", "priority": "high|medium|low"},
     {"type": "create_habit", "name": "clear habit name e.g. 'Meditate'", "recurrence": "daily|weekly|weekdays|..."},
     {"type": "complete_habit", "match": "words that identify which habit"},
+    {"type": "delete_habit", "match": "words that identify which habit"},
     {"type": "create_expense", "amount": 0, "category": "food|travel|shopping|education|health|other", "description": "..."},
     {"type": "store_memory", "key": "...", "value": "..."},
     {"type": "complete_task", "match": "words that identify which task"},
@@ -38,7 +39,7 @@ RULES:
 - Use memory and current data to give sharp, contextual replies. If they have overdue tasks, mention it.
 - If the user asks about their tasks/expenses, answer from the CURRENT DATA provided, don't invent.
 - Match tasks for complete/delete loosely by keywords from their message.
-- Habits are RECURRING behaviours (meditate daily, gym 3x week). Use create_habit for these — never create_task. Use complete_habit when the user says they did a habit ("done meditating", "did my workout").
+- Habits are RECURRING behaviours (meditate daily, gym 3x week). Use create_habit for these — never create_task. Use complete_habit when the user says they did a habit ("done meditating", "did my workout"). Use delete_habit when the user says to remove/stop/delete a habit.
 - Use ask_followup ONLY when you genuinely need one specific piece of information to act well (e.g. "plan my week" needs priorities, "set a budget" needs amounts). Do NOT ask follow-ups for simple requests you can handle directly. Never chain more than one follow-up at a time.
 - When ACTIVE FOLLOW-UP context is present in the prompt, the user's message is their answer to your previous question — use that partial data plus their answer to complete the goal, do NOT ask again.`;
 
@@ -180,6 +181,13 @@ export class ConversationEngine {
             const habits = await habitService.getUserHabits(userId);
             const h = habitService.matchHabit(habits, action.match);
             if (h) await habitService.markComplete(h.id);
+            break;
+          }
+          case 'delete_habit': {
+            const { habitService } = await import('../habits/habitService.js');
+            const habits = await habitService.getUserHabits(userId);
+            const h = habitService.matchHabit(habits, action.match);
+            if (h) await habitService.delete(h.id);
             break;
           }
           case 'create_expense': {

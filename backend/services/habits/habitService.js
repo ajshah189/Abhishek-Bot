@@ -3,28 +3,52 @@ import { logger } from '../../utils/logger.js';
 import { v4 as uuidv4 } from 'uuid';
 import { parseRecurrence } from '../ai/dateParser.js';
 
-// How many hours past the interval counts as a missed day
 const GRACE_HOURS = 6;
 
 export class HabitService {
   async create(userId, fields) {
     try {
       const recurrence = parseRecurrence(fields.recurrence_text || fields.frequency || 'daily');
+      const name = (fields.title || fields.name || 'New Habit').trim();
+      const nameLower = name.toLowerCase();
+
+      // Dedup: check for existing habit with same normalized name
+      const existing = await db
+        .collection('habits')
+        .where('userId', '==', userId.toString())
+        .get();
+
+      const duplicate = existing.docs.find(
+        d => (d.data().name || '').trim().toLowerCase() === nameLower
+      );
+
+      if (duplicate) {
+        // Update recurrence on the existing habit rather than creating a second one
+        const updates = {
+          frequency: recurrence?.rule || 'daily',
+          intervalDays: recurrence?.intervalDays || 1,
+          updatedAt: new Date()
+        };
+        await db.collection('habits').doc(duplicate.id).update(updates);
+        logger.info('Habit updated (dedup)', { userId, habitId: duplicate.id, name });
+        return { ...duplicate.data(), ...updates };
+      }
+
       const habitData = {
         id: uuidv4(),
         userId: userId.toString(),
-        name: fields.title || fields.name || 'New Habit',
+        name,
         description: fields.description || '',
         frequency: recurrence?.rule || 'daily',
         intervalDays: recurrence?.intervalDays || 1,
         createdAt: new Date(),
+        updatedAt: new Date(),
         streak: 0,
         lastCompleted: null
       };
 
       await db.collection('habits').doc(habitData.id).set(habitData);
-      logger.info('Habit created', { userId, habitId: habitData.id });
-
+      logger.info('Habit created', { userId, habitId: habitData.id, name });
       return habitData;
     } catch (error) {
       logger.error('Failed to create habit', { error: error.message });
@@ -39,7 +63,7 @@ export class HabitService {
         .where('userId', '==', userId.toString())
         .get();
 
-      return snapshot.docs.map(doc => doc.data());
+      return snapshot.docs.map(doc => ({ ...doc.data(), _docId: doc.id }));
     } catch (error) {
       logger.error('Failed to fetch habits', { error: error.message });
       return [];
@@ -60,11 +84,9 @@ export class HabitService {
       if (habit.lastCompleted) {
         const last = habit.lastCompleted.toDate ? habit.lastCompleted.toDate() : new Date(habit.lastCompleted);
         const gapMs = now - last;
-        // Completed within the interval + grace window → increment streak
         if (gapMs <= intervalMs + graceMs) {
           newStreak = (habit.streak || 0) + 1;
         }
-        // else missed a cycle → reset to 1
       }
 
       await db.collection('habits').doc(habitId).update({
@@ -80,7 +102,52 @@ export class HabitService {
     }
   }
 
-  // Keyword-match a habit from a user's list, same approach as matchTask
+  async delete(habitId) {
+    try {
+      await db.collection('habits').doc(habitId).delete();
+      logger.info('Habit deleted', { habitId });
+      return true;
+    } catch (error) {
+      logger.error('Failed to delete habit', { error: error.message });
+      throw error;
+    }
+  }
+
+  // Removes duplicates for a user, keeping the entry with the highest streak.
+  async deduplicateForUser(userId) {
+    try {
+      const snapshot = await db
+        .collection('habits')
+        .where('userId', '==', userId.toString())
+        .get();
+
+      const byName = {};
+      for (const doc of snapshot.docs) {
+        const data = doc.data();
+        const key = (data.name || '').trim().toLowerCase();
+        if (!byName[key]) byName[key] = [];
+        byName[key].push({ id: doc.id, streak: data.streak || 0 });
+      }
+
+      let deleted = 0;
+      for (const entries of Object.values(byName)) {
+        if (entries.length <= 1) continue;
+        // Keep highest streak, delete the rest
+        entries.sort((a, b) => b.streak - a.streak);
+        for (const entry of entries.slice(1)) {
+          await db.collection('habits').doc(entry.id).delete();
+          deleted++;
+        }
+      }
+
+      logger.info('Dedup complete', { userId, deleted });
+      return deleted;
+    } catch (error) {
+      logger.error('Failed to dedup habits', { error: error.message });
+      return 0;
+    }
+  }
+
   matchHabit(habits, matchText) {
     if (!matchText || !habits.length) return null;
     const words = matchText.toLowerCase().split(/\s+/);
