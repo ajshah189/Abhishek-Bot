@@ -2,51 +2,62 @@ import { config } from 'dotenv';
 config();
 
 import express from 'express';
-import { telegramHandler } from './services/telegram/handler.js';
-import { logger } from './utils/logger.js';
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// Register global error handlers BEFORE any heavy imports
+// so a background-job failure never kills the HTTP server
+process.on('uncaughtException', (err) => {
+  console.error('💥 Uncaught exception (server stays up):', err.message, err.stack);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('💥 Unhandled rejection (server stays up):', reason);
+});
+
 app.use(express.json());
 
-// Health check
+// Root — Cloud Run startup/liveness probe hits GET / by default
+app.get('/', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+// Health check (explicit path)
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', time: new Date() });
 });
 
-// Telegram webhook - THIS IS THE KEY PART
+// Telegram webhook — lazy-load handler so a Firebase init failure
+// is a per-request 500 rather than a process crash at startup
 app.post('/webhook', async (req, res) => {
-  console.log('📨 Webhook received!', JSON.stringify(req.body).slice(0, 100));
+  console.log('📨 Webhook received:', JSON.stringify(req.body).slice(0, 100));
   try {
+    const { telegramHandler } = await import('./services/telegram/handler.js');
     const result = await telegramHandler.handleUpdate(req.body);
-    console.log('✅ Handled successfully');
+    console.log('✅ Handled');
     res.json(result);
   } catch (error) {
-    console.error('❌ Webhook error:', error.message);
-    console.error('Stack:', error.stack);
+    console.error('❌ Webhook error:', error.message, error.stack);
     res.status(500).json({ error: error.message });
   }
 });
 
-// 404
+// 404 catch-all
 app.use((req, res) => res.status(404).json({ error: 'not found' }));
 
-// Start server
+// Start listening — nothing after this line can crash the process
 const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📱 Webhook URL: ${process.env.TELEGRAM_WEBHOOK_URL || 'NOT SET'}/webhook`);
 });
 
-process.on('uncaughtException', (err) => {
-  console.error('💥 Uncaught:', err.message, err.stack);
-});
-
-process.on('unhandledRejection', (err) => {
-  console.error('💥 Unhandled:', err);
-});
-
+// Graceful shutdown on SIGTERM (Cloud Run drain)
 process.on('SIGTERM', () => {
-  console.log('Shutting down');
-  server.close(() => process.exit(0));
+  console.log('SIGTERM received — draining');
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+  // Force-exit after 10s if connections don't drain
+  setTimeout(() => process.exit(0), 10_000).unref();
 });
