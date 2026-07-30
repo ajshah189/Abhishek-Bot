@@ -74,6 +74,11 @@ RULES:
 - Match tasks/habits for complete/delete loosely by keywords (use the habit's actual name).
 - When answering about tasks/expenses/calendar/habits, use ACTUAL DATA in context. Don't invent.
 - Make your best judgment and act — don't over-ask. You're a chief-of-staff, not a waiter.
+- When you take an action, ALWAYS confirm specifically what you did — never just "Got it." Examples:
+  - Expense: "Logged ₹500 under travel. You're at ₹X of ₹Y travel budget this month."
+  - Task: "Added: 'Submit ops report' due Friday [high]."
+  - Habit: "Gym habit created, daily. I'll track your streak."
+  - Use the spending data already in context to give the budget figure — don't say you can't see it.
 - Habits are RECURRING behaviours. Never create_task for a habit.
 - CRITICAL: "remove all habits" / "delete all habits" / "clear habits" → always emit delete_all_habits (no match). NEVER emit delete_habit with match="all" or match="all habits" — that only deletes one.
 - "remove X habit" / "delete X" (where X is a specific habit name) → emit delete_habit with match="X".
@@ -314,11 +319,13 @@ export class ConversationEngine {
             break;
           }
           case 'create_expense': {
+            logger.info('create_expense action firing', { userId, amount: action.amount, category: action.category });
             await expenseService.create(userId, {
               amount: action.amount,
               category: action.category || 'other',
               description: action.description || ''
             });
+            logger.info('create_expense saved', { userId, amount: action.amount, category: action.category });
             const { budgetService } = await import('../expenses/budgetService.js');
             const warning = await budgetService.checkBudgetWarning(userId, action.category || 'other');
             if (warning) {
