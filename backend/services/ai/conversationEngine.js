@@ -9,44 +9,78 @@ import { conversationMemory } from '../memory/conversationMemory.js';
 import { memoryService } from '../memory/memoryService.js';
 import { taskService } from '../tasks/taskService.js';
 import { expenseService } from '../expenses/expenseService.js';
+import { habitService } from '../habits/habitService.js';
 
-const SYSTEM_PROMPT = `You are Abhishek's personal chief-of-staff assistant on Telegram.
+// ── IST helpers ────────────────────────────────────────────────────────────
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
 
-PERSONALITY: Crisp, proactive, sharp. You anticipate needs. You are concise — a sentence or two, not paragraphs. You never pad replies with filler. You talk like a trusted operator, not a chatbot.
-
-YOUR JOB: Read the user's message plus context, decide what actions to take, and reply naturally.
-
-You MUST respond with a single JSON object, no other text:
-{
-  "reply": "your natural conversational reply to show the user",
-  "actions": [
-    {"type": "create_task", "title": "...", "deadline_text": "raw date words if any", "recurrence_text": "raw recurrence words if any e.g. 'daily' 'every monday'", "priority": "high|medium|low"},
-    {"type": "create_habit", "name": "clear habit name e.g. 'Meditate'", "recurrence": "daily|weekly|weekdays|..."},
-    {"type": "complete_habit", "match": "words that identify which habit"},
-    {"type": "delete_habit", "match": "words that identify which habit"},
-    {"type": "create_expense", "amount": 0, "category": "food|travel|shopping|education|health|other", "description": "..."},
-    {"type": "store_memory", "key": "...", "value": "..."},
-    {"type": "complete_task", "match": "words that identify which task"},
-    {"type": "delete_task", "match": "words that identify which task"},
-    {"type": "ask_followup", "waiting_for": "short label for what you need", "partial": {"key": "captured so far"}},
-    {"type": "create_calendar_event", "title": "...", "date": "raw date/time text", "end_date": "raw end time text if any", "location": "...", "description": "..."}
-  ]
+function istNow() {
+  return new Date(Date.now() + IST_OFFSET_MS);
 }
 
+function istDateStr(date) {
+  if (!date) return '';
+  const d = new Date(
+    (date.toDate ? date.toDate() : new Date(date)).getTime() + IST_OFFSET_MS
+  );
+  return d.toISOString().slice(0, 10);
+}
+
+function isCompletedToday(habit) {
+  if (!habit.lastCompleted) return false;
+  return istDateStr(habit.lastCompleted) === istDateStr(new Date());
+}
+
+// ── System prompt ───────────────────────────────────────────────────────────
+const SYSTEM_PROMPT = `You are Abhishek's personal chief-of-staff. You run his life like a sharp, proactive operator.
+
+ABOUT ABHISHEK:
+- IIM Ahmedabad PGP student (2025-27), Section B CR
+- CA qualified (All India 16th in SFM)
+- Getting married to Riya on January 24, 2027
+- Interested in semiconductors, OSAT, entrepreneurship
+- Previously built Special Modules vertical at Waaree Energies
+- Prefers Jain food
+- Timezone: IST (Asia/Kolkata)
+
+YOUR PERSONALITY:
+- Crisp. Never more than 2-3 sentences unless asked for detail.
+- Proactive. Don't wait to be asked — flag overdue tasks, spending concerns, missed habits, upcoming deadlines.
+- Opinionated. If he's behind on something, say so directly. "You have 3 overdue tasks" not "Would you like me to check your tasks?"
+- Personal. Use his name occasionally. Reference his actual schedule and context.
+- Never say "How can I assist you?" or "How can I help" or "Is there anything else?" — those are filler. Just handle it.
+- If there's nothing to act on, give a quick status or a useful observation.
+
+WHAT YOU CAN DO (emit these in the actions array):
+{"type":"create_task","title":"...","deadline_text":"raw date","recurrence_text":"raw recurrence","priority":"high|medium|low"}
+{"type":"create_expense","amount":0,"category":"food|travel|shopping|education|health|other","description":"..."}
+{"type":"store_memory","key":"...","value":"..."}
+{"type":"complete_task","match":"keywords to find task"}
+{"type":"delete_task","match":"keywords to find task"}
+{"type":"create_habit","name":"...","recurrence":"daily|weekly|weekdays|..."}
+{"type":"complete_habit","match":"keywords to find habit"}
+{"type":"delete_habit","match":"keywords to find habit"}
+{"type":"delete_all_habits"} — use when user says "remove all habits" / "clear all habits" / "delete everything"
+{"type":"create_calendar_event","title":"...","date":"raw date/time","end_date":"raw end time","location":"...","description":"..."}
+{"type":"ask_followup","waiting_for":"label","partial":{}}
+
+RESPONSE FORMAT — always valid JSON, no other text:
+{"reply":"your message to Abhishek","actions":[...]}
+
 RULES:
-- "actions" can be empty if the user is just chatting or asking a question. Then just fill "reply".
-- For tasks, always extract a clear title. Never use "Untitled Task".
-- Keep deadline_text as the user's raw words ("Friday", "tomorrow 6pm") — the system parses it.
-- Use memory and current data to give sharp, contextual replies. If they have overdue tasks, mention it.
-- If the user asks about their tasks/expenses, answer from the CURRENT DATA provided, don't invent.
-- Match tasks for complete/delete loosely by keywords from their message.
-- Habits are RECURRING behaviours (meditate daily, gym 3x week). Use create_habit for these — never create_task. Use complete_habit when the user says they did a habit ("done meditating", "did my workout"). Use delete_habit when the user says to remove/stop/delete a habit.
-- Use ask_followup ONLY when you genuinely need one specific piece of information to act well (e.g. "plan my week" needs priorities, "set a budget" needs amounts). Do NOT ask follow-ups for simple requests you can handle directly. Never chain more than one follow-up at a time.
-- When ACTIVE FOLLOW-UP context is present in the prompt, the user's message is their answer to your previous question — use that partial data plus their answer to complete the goal, do NOT ask again.
-- Use create_calendar_event when the user mentions a meeting, appointment, call, or any timed event with a date/time. Examples: "Meeting with Riya tomorrow at 4pm" → create_calendar_event. "Remind me to call doctor Friday 11am" → create_calendar_event. Pass date/time as the user's raw words in the date field — the system parses it. If calendar is not connected, just reply naturally that they can use /connectcalendar.`;
+- Actions can be empty if just chatting or answering a question.
+- For tasks: always extract a clear title. Never "Untitled Task."
+- Keep deadline_text and date as raw words — the system parses them.
+- Match tasks/habits for complete/delete loosely by keywords.
+- When answering about tasks/expenses/calendar/habits, use ACTUAL DATA in context. Don't invent.
+- Make your best judgment and act — don't over-ask. You're a chief-of-staff, not a waiter.
+- Habits are RECURRING behaviours. Never create_task for a habit.
+- Use delete_all_habits when the user clearly wants ALL habits removed at once.
+- Use create_calendar_event for meetings, appointments, or any timed event.
+- When ACTIVE FOLLOW-UP context is present, the user is answering your question — use that to complete the goal, don't ask again.`;
 
 export class ConversationEngine {
-  // --- Session helpers (Firestore: settings/session_{userId}) ---
+  // ── Session helpers ──────────────────────────────────────────────────────
 
   async getSession(userId) {
     try {
@@ -74,48 +108,103 @@ export class ConversationEngine {
     }
   }
 
-  // --- Main entry point ---
+  // ── Main entry point ─────────────────────────────────────────────────────
 
   async process(userId, chatId, message) {
-    // Fetch context + any pending follow-up session in parallel
-    const [recentTurns, memories, tasks, expenseSummary, pendingSession, calendarContext, activeDoc] = await Promise.all([
+    const [recentTurns, memories, tasks, expenseSummary, habits, pendingSession,
+           calendarContext, activeDoc, journalLines, budgets] = await Promise.all([
       conversationMemory.getRecentTurns(userId),
       memoryService.getUserMemories(userId),
       taskService.getUserTasks(userId, 'pending'),
       expenseService.getMonthlySummary(userId),
+      habitService.getUserHabits(userId).catch(() => []),
       this.getSession(userId),
       this.getCalendarContext(userId),
-      this.getActiveDocContext(userId)
+      this.getActiveDocContext(userId),
+      this.getJournalLines(userId),
+      this.getBudgets(userId)
     ]);
 
-    // If there's an active follow-up, clear it now — executeActions will re-set
-    // it if the LLM decides it needs another round, or leave it cleared if resolved.
-    if (pendingSession) {
-      await this.clearSession(userId);
-    }
+    if (pendingSession) await this.clearSession(userId);
 
+    // ── IST time block ─────────────────────────────────────────────────────
+    const now = istNow();
+    const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const MON_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const h = now.getUTCHours(), m = now.getUTCMinutes();
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const timeBlock = `RIGHT NOW: ${DAY_NAMES[now.getUTCDay()]}, ${now.getUTCDate()} ${MON_NAMES[now.getUTCMonth()]} ${now.getUTCFullYear()}, ${h % 12 || 12}:${String(m).padStart(2,'0')} ${ampm} IST`;
+    const todayStr = now.toISOString().slice(0, 10);
+
+    // ── Tasks: split by urgency ────────────────────────────────────────────
+    const overdueTasks = tasks.filter(t => t.deadline && istDateStr(t.deadline) < todayStr);
+    const dueTodayTasks = tasks.filter(t => t.deadline && istDateStr(t.deadline) === todayStr);
+    const upcomingTasks = tasks.filter(t => !t.deadline || istDateStr(t.deadline) > todayStr);
+
+    const taskLines = (arr, label) => arr.length
+      ? `${label} (${arr.length}):\n` + arr.map((t, i) =>
+          `${i+1}. ${t.title} [${t.priority}]${t.deadline ? ` — due ${formatDate(t.deadline)}` : ''}`
+        ).join('\n')
+      : '';
+
+    const taskBlock = [
+      taskLines(overdueTasks, 'OVERDUE TASKS ❗'),
+      taskLines(dueTodayTasks, 'DUE TODAY 📌'),
+      taskLines(upcomingTasks, 'UPCOMING TASKS')
+    ].filter(Boolean).join('\n\n') || '(no pending tasks)';
+
+    // ── Habits ─────────────────────────────────────────────────────────────
+    const habitBlock = habits.length
+      ? 'HABITS TODAY:\n' + habits.map(h => {
+          const done = isCompletedToday(h);
+          return `- ${h.name}: ${done ? '✅ done' : '❌ not done'} (streak: ${h.streak || 0} day${h.streak !== 1 ? 's' : ''}, ${h.frequency})`;
+        }).join('\n')
+      : '(no habits set)';
+
+    // ── Expenses with budget context ───────────────────────────────────────
+    const expenseBlock = Object.keys(expenseSummary).length
+      ? Object.entries(expenseSummary).map(([c, a]) => {
+          const budget = budgets[c];
+          const pct = budget ? Math.round((a / budget) * 100) : null;
+          const flag = pct !== null && pct >= 80 ? (pct >= 100 ? ' ⚠️ OVER BUDGET' : ` (${pct}% of ₹${budget} budget)`) : '';
+          return `${c}: ₹${Math.round(a)}${flag}`;
+        }).join(', ')
+      : '(no expenses this month)';
+
+    // ── Memory ─────────────────────────────────────────────────────────────
     const memoryBlock = this.selectMemories(memories, message)
       .map(m => `- ${m.key || m.category}: ${m.value}`).join('\n') || '(none yet)';
 
-    const taskBlock = tasks.length
-      ? tasks.map((t, i) => `${i + 1}. ${t.title}${t.deadline ? ` (due ${formatDate(t.deadline)})` : ''} [${t.priority}]`).join('\n')
-      : '(no pending tasks)';
+    // ── Proactive observations ─────────────────────────────────────────────
+    const observations = this.buildObservations(tasks, habits, expenseSummary, budgets, todayStr);
+    const obsBlock = observations.length
+      ? `\nPROACTIVE OBSERVATIONS (weave these naturally into your reply if relevant):\n${observations.join('\n')}`
+      : '';
 
-    const expenseBlock = Object.keys(expenseSummary).length
-      ? Object.entries(expenseSummary).map(([c, a]) => `${c}: ₹${a}`).join(', ')
-      : '(no expenses this month)';
-
-    // Inject pending session context so the LLM knows it's receiving an answer
+    // ── Session ────────────────────────────────────────────────────────────
     const sessionBlock = pendingSession
       ? `\nACTIVE FOLLOW-UP:\nGoal: ${pendingSession.waiting_for}\nPartial data: ${JSON.stringify(pendingSession.partial || {})}\nThe user is now answering your question — use this to complete the goal.\n`
       : '';
 
-    const contextMessage = `LONG-TERM MEMORY:\n${memoryBlock}\n\nCURRENT PENDING TASKS:\n${taskBlock}\n\nTHIS MONTH'S SPENDING:\n${expenseBlock}${calendarContext}${activeDoc}${sessionBlock}\n\nUSER MESSAGE: ${message}`;
+    // ── Assemble context ───────────────────────────────────────────────────
+    const contextParts = [
+      timeBlock,
+      calendarContext ? calendarContext.trim() : null,
+      `PENDING TASKS:\n${taskBlock}`,
+      habitBlock,
+      `THIS MONTH'S SPENDING: ${expenseBlock}`,
+      journalLines ? `RECENT JOURNAL:\n${journalLines}` : null,
+      `LONG-TERM MEMORY:\n${memoryBlock}`,
+      activeDoc ? activeDoc.trim() : null,
+      obsBlock || null,
+      sessionBlock || null,
+      `USER MESSAGE: ${message}`
+    ].filter(Boolean).join('\n\n');
 
     const messages = [
       { role: 'system', content: SYSTEM_PROMPT },
       ...recentTurns,
-      { role: 'user', content: contextMessage }
+      { role: 'user', content: contextParts }
     ];
 
     let raw;
@@ -128,18 +217,34 @@ export class ConversationEngine {
 
     const parsed = this.parseResponse(raw);
 
-    await this.executeActions(userId, parsed.actions, tasks);
+    // ── Execute actions ────────────────────────────────────────────────────
+    await this.executeActions(userId, parsed.actions, tasks, habits);
 
     await conversationMemory.addTurn(userId, 'user', message);
     await conversationMemory.addTurn(userId, 'assistant', parsed.reply);
 
-    // Append any budget warnings surfaced during actions
+    // ── Budget warnings surfaced during actions ────────────────────────────
     if (this._pendingWarnings && this._pendingWarnings.length) {
       parsed.reply += '\n\n' + this._pendingWarnings.join('\n');
       this._pendingWarnings = [];
     }
 
-    return parsed.reply;
+    // ── Reply guardrails ───────────────────────────────────────────────────
+    return this.cleanReply(parsed.reply, recentTurns.length);
+  }
+
+  cleanReply(reply, priorTurnCount) {
+    if (!reply) return "Got it.";
+    // Strip filler phrases
+    reply = reply
+      .replace(/how can I (assist|help) you\??/gi, '')
+      .replace(/is there anything else( I can (help|do|assist) (you )?with)?\??/gi, '')
+      .trim();
+    // Strip leading greeting on follow-up turns
+    if (priorTurnCount > 0) {
+      reply = reply.replace(/^(hi|hello|hey|good (morning|afternoon|evening))[!,]?\s*/i, '');
+    }
+    return reply.trim() || "Got it.";
   }
 
   parseResponse(raw) {
@@ -158,7 +263,7 @@ export class ConversationEngine {
     return { reply: raw.trim() || "Got it.", actions: [] };
   }
 
-  async executeActions(userId, actions, currentTasks) {
+  async executeActions(userId, actions, currentTasks, currentHabits) {
     for (const action of actions) {
       try {
         switch (action.type) {
@@ -173,7 +278,6 @@ export class ConversationEngine {
             break;
           }
           case 'create_habit': {
-            const { habitService } = await import('../habits/habitService.js');
             await habitService.create(userId, {
               title: action.name,
               recurrence_text: action.recurrence || 'daily'
@@ -181,17 +285,21 @@ export class ConversationEngine {
             break;
           }
           case 'complete_habit': {
-            const { habitService } = await import('../habits/habitService.js');
-            const habits = await habitService.getUserHabits(userId);
+            const habits = currentHabits || await habitService.getUserHabits(userId);
             const h = habitService.matchHabit(habits, action.match);
-            if (h) await habitService.markComplete(h.id);
+            if (h) await habitService.markComplete(h.id || h._docId);
             break;
           }
           case 'delete_habit': {
-            const { habitService } = await import('../habits/habitService.js');
-            const habits = await habitService.getUserHabits(userId);
+            const habits = currentHabits || await habitService.getUserHabits(userId);
             const h = habitService.matchHabit(habits, action.match);
-            if (h) await habitService.delete(h.id);
+            if (h) await habitService.delete(h.id || h._docId);
+            break;
+          }
+          case 'delete_all_habits': {
+            const habits = currentHabits || await habitService.getUserHabits(userId);
+            await Promise.all(habits.map(h => habitService.delete(h.id || h._docId)));
+            logger.info('All habits deleted', { userId, count: habits.length });
             break;
           }
           case 'create_expense': {
@@ -265,14 +373,58 @@ export class ConversationEngine {
     }
   }
 
+  // ── Context helpers ──────────────────────────────────────────────────────
+
+  buildObservations(tasks, habits, expenseSummary, budgets, todayStr) {
+    const obs = [];
+
+    // Overdue tasks
+    tasks
+      .filter(t => t.deadline && istDateStr(t.deadline) < todayStr)
+      .forEach(t => obs.push(`⚠️ OVERDUE: "${t.title}" was due ${formatDate(t.deadline)}`));
+
+    // Due today
+    tasks
+      .filter(t => t.deadline && istDateStr(t.deadline) === todayStr)
+      .forEach(t => obs.push(`📌 DUE TODAY: "${t.title}"`));
+
+    // Habits not done
+    const pendingHabits = habits.filter(h => !isCompletedToday(h));
+    if (pendingHabits.length) {
+      obs.push(`🎯 HABITS PENDING: ${pendingHabits.map(h => h.name).join(', ')}`);
+    }
+
+    // Streak at risk: daily habit, has streak > 0, last completed more than 1 day ago
+    habits.forEach(h => {
+      if ((h.frequency === 'daily' || h.intervalDays === 1) && h.streak > 0 && !isCompletedToday(h)) {
+        const last = h.lastCompleted?.toDate ? h.lastCompleted.toDate() : (h.lastCompleted ? new Date(h.lastCompleted) : null);
+        if (last && (Date.now() - last.getTime()) > 24 * 60 * 60 * 1000) {
+          obs.push(`🔥 STREAK AT RISK: ${h.name} (${h.streak} day streak)`);
+        }
+      }
+    });
+
+    // Budget alerts
+    Object.entries(expenseSummary).forEach(([cat, spent]) => {
+      const budget = budgets[cat];
+      if (budget) {
+        const pct = spent / budget;
+        if (pct >= 0.8) {
+          obs.push(`💰 BUDGET ALERT: ${cat} at ₹${Math.round(spent)} of ₹${budget} (${Math.round(pct * 100)}%)`);
+        }
+      }
+    });
+
+    return obs;
+  }
+
   async getActiveDocContext(userId) {
     try {
       const { pdfService } = await import('../documents/pdfService.js');
       const doc = await pdfService.getActiveDoc(userId);
       if (!doc) return '';
-      // Extend TTL since user is still interacting
       pdfService.touchActiveDoc(userId).catch(() => {});
-      return `\n\nACTIVE DOCUMENT (user uploaded this PDF — answer questions about it using this content):\nSummary: ${doc.summary}\n\nContent excerpt:\n${doc.text}`;
+      return `ACTIVE DOCUMENT (answer questions about it using this content):\nSummary: ${doc.summary}\n\nContent excerpt:\n${doc.text}`;
     } catch {
       return '';
     }
@@ -284,15 +436,39 @@ export class ConversationEngine {
       if (!tokenDoc.exists) return '';
       const { googleCalendarService } = await import('../calendar/googleCalendarService.js');
       const events = await googleCalendarService.listTodayEvents(userId);
-      if (!Array.isArray(events) || !events.length) return '\n\nTODAY\'S CALENDAR: (no events today)';
+      if (!Array.isArray(events) || !events.length) return 'TODAY\'S CALENDAR: (no events)';
       const lines = events.map(e => {
         const t = new Date(e.start);
         const time = isNaN(t) ? e.start : t.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
         return `- ${e.title} at ${time}${e.location ? ` @ ${e.location}` : ''}`;
       }).join('\n');
-      return `\n\nTODAY'S CALENDAR:\n${lines}`;
+      return `TODAY'S CALENDAR:\n${lines}`;
     } catch {
       return '';
+    }
+  }
+
+  async getJournalLines(userId) {
+    try {
+      const { journalService } = await import('../journal/journalService.js');
+      const entries = await journalService.getUserEntries(userId, 7);
+      if (!entries || !entries.length) return '';
+      return entries.slice(0, 3).map(e => {
+        const d = e.createdAt?.toDate ? e.createdAt.toDate() : new Date(e.createdAt);
+        const label = e.title || (e.content || '').slice(0, 60);
+        return `- "${label}" (${d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })})`;
+      }).join('\n');
+    } catch {
+      return '';
+    }
+  }
+
+  async getBudgets(userId) {
+    try {
+      const { budgetService } = await import('../expenses/budgetService.js');
+      return budgetService.getBudgets(userId);
+    } catch {
+      return { food: 8000, travel: 5000, shopping: 5000, education: 3000, health: 3000, other: 3000 };
     }
   }
 
@@ -314,15 +490,11 @@ export class ConversationEngine {
   matchTask(tasks, matchText) {
     if (!matchText || !tasks.length) return null;
     const words = matchText.toLowerCase().split(/\s+/);
-    let best = null;
-    let bestScore = 0;
+    let best = null, bestScore = 0;
     for (const t of tasks) {
       const title = (t.title || '').toLowerCase();
       const score = words.filter(w => w.length > 2 && title.includes(w)).length;
-      if (score > bestScore) {
-        bestScore = score;
-        best = t;
-      }
+      if (score > bestScore) { bestScore = score; best = t; }
     }
     return bestScore > 0 ? best : null;
   }
