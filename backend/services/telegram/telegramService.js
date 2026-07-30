@@ -19,6 +19,22 @@ export class TelegramService {
     }
   }
 
+  async sendMessageWithButton(chatId, text, buttonText, buttonUrl) {
+    try {
+      const response = await axios.post(getTelegramApiUrl('sendMessage'), {
+        chat_id: chatId,
+        text,
+        reply_markup: {
+          inline_keyboard: [[{ text: buttonText, url: buttonUrl }]]
+        }
+      });
+      return response.data;
+    } catch (error) {
+      logger.error('Failed to send message with button', { error: error.message, chatId });
+      throw error;
+    }
+  }
+
   async sendDocument(chatId, fileId, caption = '') {
     try {
       const response = await axios.post(getTelegramApiUrl('sendDocument'), {

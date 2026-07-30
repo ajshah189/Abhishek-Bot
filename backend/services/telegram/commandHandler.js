@@ -5,6 +5,7 @@ import { plannerService } from '../planner/plannerService.js';
 import { searchService } from '../search/searchService.js';
 import { analyticsService } from '../analytics/analyticsService.js';
 import { logger } from '../../utils/logger.js';
+import { telegramService } from './telegramService.js';
 
 export class CommandHandler {
   async handle(userId, chatId, command, args) {
@@ -47,7 +48,7 @@ export class CommandHandler {
           return await this.handleCleanHabits(userId);
 
         case 'connectcalendar':
-          return await this.handleConnectCalendar(userId);
+          return await this.handleConnectCalendar(userId, chatId);
 
         case 'calendar':
           return await this.handleCalendar(userId);
@@ -234,11 +235,18 @@ Just type naturally:
 - "Add task: finish assignment"`;
   }
 
-  async handleConnectCalendar(userId) {
+  async handleConnectCalendar(userId, chatId) {
     try {
       const { getAuthUrl } = await import('../calendar/googleAuth.js');
       const url = getAuthUrl(userId);
-      return `🗓 *Connect Google Calendar*\n\nClick the link below to authorize:\n${url}\n\nAfter connecting, use /calendar to see today's events.`;
+      logger.info('OAuth URL generated', { userId, url });
+      await telegramService.sendMessageWithButton(
+        chatId,
+        '🗓 Connect Google Calendar\n\nTap the button below to authorize. After connecting, use /calendar to see today\'s events.',
+        '🔗 Authorize Google Calendar',
+        url
+      );
+      return null;
     } catch (err) {
       logger.error('handleConnectCalendar failed', { error: err.message });
       return '❌ Could not generate auth link. Try again.';

@@ -33,7 +33,9 @@ export class TelegramHandler {
       if (message.startsWith('/')) {
         const [command, ...args] = message.split(' ');
         const response = await commandHandler.handle(userId, chatId, command, args);
-        await telegramService.sendMessage(chatId, response);
+        if (response !== null && response !== undefined) {
+          await telegramService.sendMessage(chatId, response);
+        }
         return { ok: true };
       }
 
