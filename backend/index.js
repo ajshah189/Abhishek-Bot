@@ -6,15 +6,26 @@ import express from 'express';
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Register global error handlers BEFORE any heavy imports
-// so a background-job failure never kills the HTTP server
+// ── Global error guards ────────────────────────────────────────────────────
+// Must be registered before any import that can fail, so background-job
+// errors never kill the HTTP server.
+
+process.on('exit', (code) => {
+  // Visible in Cloud Run logs — tells us the exit code and when the process ended.
+  console.log(`PROCESS EXITING code=${code} time=${new Date().toISOString()}`);
+});
+
 process.on('uncaughtException', (err) => {
-  console.error('💥 Uncaught exception (server stays up):', err.message, err.stack);
+  console.error('UNCAUGHT_EXCEPTION (server stays up):', err.message, err.stack);
+  // Do NOT call process.exit here — a background error must not kill the server.
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('💥 Unhandled rejection (server stays up):', reason);
+  console.error('UNHANDLED_REJECTION (server stays up):', reason);
+  // Do NOT call process.exit here.
 });
+
+// ── Express app ────────────────────────────────────────────────────────────
 
 app.use(express.json());
 
@@ -23,22 +34,22 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// Health check (explicit path)
+// Explicit health-check path
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', time: new Date() });
 });
 
-// Telegram webhook — lazy-load handler so a Firebase init failure
-// is a per-request 500 rather than a process crash at startup
+// Telegram webhook — telegramHandler is lazy-loaded so a Firebase init
+// failure is a per-request 500, not a startup crash
 app.post('/webhook', async (req, res) => {
-  console.log('📨 Webhook received:', JSON.stringify(req.body).slice(0, 100));
+  console.log('WEBHOOK_IN:', JSON.stringify(req.body).slice(0, 100));
   try {
     const { telegramHandler } = await import('./services/telegram/handler.js');
     const result = await telegramHandler.handleUpdate(req.body);
-    console.log('✅ Handled');
+    console.log('WEBHOOK_OK');
     res.json(result);
   } catch (error) {
-    console.error('❌ Webhook error:', error.message, error.stack);
+    console.error('WEBHOOK_ERR:', error.message, error.stack);
     res.status(500).json({ error: error.message });
   }
 });
@@ -46,18 +57,27 @@ app.post('/webhook', async (req, res) => {
 // 404 catch-all
 app.use((req, res) => res.status(404).json({ error: 'not found' }));
 
-// Start listening — nothing after this line can crash the process
+// ── Start ──────────────────────────────────────────────────────────────────
+// Nothing below this line should throw synchronously or reject unhandled.
+// Background jobs (reminderPoller, weeklyScheduler) are intentionally
+// NOT started here — they require an always-on Cloud Run instance and
+// will be wired in after stable deployment is confirmed.
+
 const server = app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`BOOT_OK port=${PORT} time=${new Date().toISOString()}`);
 });
 
-// Graceful shutdown on SIGTERM (Cloud Run drain)
+// Graceful SIGTERM (Cloud Run sends this to drain the instance)
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received — draining');
+  const ts = new Date().toISOString();
+  console.log(`SIGTERM_RECEIVED time=${ts} — beginning graceful drain`);
   server.close(() => {
-    console.log('Server closed');
+    console.log('SERVER_CLOSED — exiting cleanly');
     process.exit(0);
   });
-  // Force-exit after 10s if connections don't drain
-  setTimeout(() => process.exit(0), 10_000).unref();
+  // Force-exit after 10s if existing connections don't drain in time
+  setTimeout(() => {
+    console.log('FORCE_EXIT after drain timeout');
+    process.exit(0);
+  }, 10_000).unref();
 });
