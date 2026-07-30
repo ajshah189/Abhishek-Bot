@@ -67,7 +67,21 @@ WHAT YOU CAN DO (emit these in the actions array):
 {"type":"create_calendar_event","title":"...","date":"raw date/time","end_date":"raw end time","location":"...","description":"..."}
 {"type":"create_contact","name":"...","phone":"...","relationship":"..."} — save a person's contact. Use when user shares a phone number for someone.
 {"type":"send_whatsapp","contact_name":"...","message":"..."} — draft and send a WhatsApp message. Match contact_name to KNOWN CONTACTS in context. Draft a natural, concise message from what the user wants to say.
+{"type":"web_search","query":"concise search query 3-6 words"} — search the web for current information.
 {"type":"ask_followup","waiting_for":"label","partial":{}}
+
+WHEN TO SEARCH (emit web_search):
+- Current events, news, scores, stock prices, weather forecasts
+- Facts you're not confident about or that change over time
+- Specific info you don't have: restaurant recommendations, product prices, flight status
+- Research topics: semiconductor news, IIMA calendar, industry updates
+- Anything where real-time data improves the answer
+
+WHEN NOT TO SEARCH (answer from knowledge):
+- General concepts: "what is GDP?", "explain DCF" → just answer
+- Instructions: "create a task", "log ₹500 food" → just act on it
+- Personal data questions: tasks, expenses, habits → use context already provided
+- Things you can confidently answer from training data
 
 RESPONSE FORMAT — always valid JSON, no other text:
 {"reply":"your message to Abhishek","actions":[...]}
@@ -93,6 +107,8 @@ RULES:
 - Use create_calendar_event for meetings, appointments, or any timed event.
 - When ACTIVE FOLLOW-UP context is present, the user is answering your question — use that to complete the goal, don't ask again.
 - When the user asks about "the website", "my dashboard", "the tracker", "the site we made", or similar — share https://abhishek-assistant-d2e8f.web.app and mention it shows tasks, expenses, habits, and memory. For the voice assistant, share https://abhishek-assistant-d2e8f.web.app/voice
+- When you emit web_search, write a placeholder reply like "Let me check that for you." — the system will replace it with a grounded answer once search results come back.
+- Always cite sources briefly when answering from web search results.
 - When the user wants to message someone, use send_whatsapp. Draft a natural, brief message — don't over-explain or add filler. Match the person's name against KNOWN CONTACTS in context.
 - When the user shares a phone number for a person ("Riya's number is 9876543210"), emit create_contact with their name and number. Don't just store_memory for phone numbers.
 - For send_whatsapp: in your reply, just confirm what you drafted — the system will add the WhatsApp link automatically. Do NOT include raw URLs in your reply text.
@@ -251,7 +267,27 @@ export class ConversationEngine {
     // ── Execute actions ────────────────────────────────────────────────────
     this._calendarNote = null;
     this._whatsappLink = null;
+    this._searchResults = null;
+    this._searchQuery = null;
     await this.executeActions(userId, parsed.actions, tasks, habits);
+
+    // ── Second LLM call: synthesise search results ─────────────────────────
+    if (this._searchResults) {
+      try {
+        const searchContext = `The user asked: "${message}"\n\nI searched for: "${this._searchQuery}"\n\nSearch results:\n${this._searchResults}\n\nUsing these results, give a concise, direct answer (2-4 sentences). Cite the source URL or name if relevant. If results are insufficient, say so briefly and share what you do know.`;
+        const grounded = await llm.call(
+          "You are Abhishek's chief-of-staff assistant. Answer his question using the provided search results. Be crisp and direct. Cite sources briefly. No filler.",
+          searchContext,
+          0.4
+        );
+        if (grounded) parsed.reply = grounded;
+      } catch (err) {
+        logger.error('Search synthesis LLM call failed', { error: err.message });
+        parsed.reply = `I searched for "${this._searchQuery}" but couldn't synthesise the results right now. Here's what I found:\n\n${this._searchResults.slice(0, 500)}`;
+      }
+      this._searchResults = null;
+      this._searchQuery = null;
+    }
 
     await conversationMemory.addTurn(userId, 'user', message);
     await conversationMemory.addTurn(userId, 'assistant', parsed.reply);
@@ -437,6 +473,19 @@ export class ConversationEngine {
               } else if (result?.success && result.link) {
                 this._calendarNote = `📅 [View in Google Calendar](${result.link})`;
               }
+            }
+            break;
+          }
+          case 'web_search': {
+            try {
+              const { webSearchService } = await import('../search/webSearchService.js');
+              const results = await webSearchService.search(action.query || '');
+              this._searchResults = webSearchService.formatForLLM(results);
+              this._searchQuery = action.query || '';
+              logger.info('web_search completed', { query: action.query, resultCount: results.length });
+            } catch (err) {
+              logger.error('web_search action failed', { error: err.message });
+              this._searchResults = null;
             }
             break;
           }

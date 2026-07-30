@@ -67,6 +67,9 @@ export class CommandHandler {
         case 'upcoming':
           return await this.handleUpcoming(userId);
 
+        case 'news':
+          return await this.handleNews(userId, chatId, args);
+
         case 'settings':
           return this.handleSettings();
 
@@ -237,6 +240,7 @@ Analytics
 
 Search
 /search <query> - Search all data
+/news [topic] - Latest news headlines
 
 Utilities
 /clear - Reset conversation memory
@@ -397,6 +401,28 @@ Spending: ${spendBlock}`;
     );
 
     return summary + calendarFootnote;
+  }
+
+  async handleNews(userId, chatId, args) {
+    const query = args.length ? args.join(' ') : 'India business technology latest news';
+    try {
+      const { webSearchService } = await import('../search/webSearchService.js');
+      await telegramService.sendMessage(chatId, `🔍 Searching news for "${query}"...`);
+      const results = await webSearchService.searchNews(query, 5);
+      if (!results.length) return '📰 No news results found. Try a different query.';
+
+      let msg = `📰 *Latest: ${query}*\n\n`;
+      results.forEach((r, i) => {
+        msg += `${i + 1}. *${r.title}*\n`;
+        if (r.snippet) msg += `   ${r.snippet.slice(0, 120)}${r.snippet.length > 120 ? '…' : ''}\n`;
+        if (r.url) msg += `   ${r.url}\n`;
+        msg += '\n';
+      });
+      return msg.trim();
+    } catch (err) {
+      logger.error('handleNews failed', { error: err.message });
+      return '❌ Could not fetch news right now. Try again.';
+    }
   }
 
   async handleClear(userId) {
