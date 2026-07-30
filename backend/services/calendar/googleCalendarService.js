@@ -42,7 +42,8 @@ export class GoogleCalendarService {
         timeMin: new Date().toISOString(),
         maxResults,
         singleEvents: true,
-        orderBy: 'startTime'
+        orderBy: 'startTime',
+        timeZone: 'Asia/Kolkata'
       });
 
       return (res.data.items || []).map(e => ({
@@ -64,14 +65,17 @@ export class GoogleCalendarService {
       if (!auth) return NOT_CONNECTED;
 
       const calendar = google.calendar({ version: 'v3', auth });
-      const now = new Date();
-      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+      // Compute today's boundaries in IST (server runs UTC on Cloud Run)
+      const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+      const istNow = new Date(Date.now() + IST_OFFSET_MS);
+      const startOfDay = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate()));
+      const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
 
       const res = await calendar.events.list({
         calendarId: 'primary',
         timeMin: startOfDay.toISOString(),
         timeMax: endOfDay.toISOString(),
+        timeZone: 'Asia/Kolkata',
         singleEvents: true,
         orderBy: 'startTime'
       });
