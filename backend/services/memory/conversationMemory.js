@@ -39,7 +39,6 @@ export class ConversationMemory {
       return [];
     }
   }
-}
 
   async clearHistory(userId) {
     try {
