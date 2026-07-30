@@ -68,6 +68,45 @@ export class ExpenseService {
       throw error;
     }
   }
+
+  async deleteAll(userId) {
+    try {
+      const snapshot = await db
+        .collection('expenses')
+        .where('userId', '==', userId.toString())
+        .get();
+      if (snapshot.empty) return 0;
+      await Promise.all(snapshot.docs.map(doc => doc.ref.delete()));
+      logger.info('All expenses deleted', { userId, count: snapshot.size });
+      return snapshot.size;
+    } catch (error) {
+      logger.error('Failed to delete all expenses', { error: error.message });
+      throw error;
+    }
+  }
+
+  async deleteByKeyword(userId, keyword) {
+    try {
+      const snapshot = await db
+        .collection('expenses')
+        .where('userId', '==', userId.toString())
+        .get();
+      const kw = keyword.toLowerCase();
+      const matches = snapshot.docs.filter(doc => {
+        const d = doc.data();
+        return (d.description || '').toLowerCase().includes(kw) ||
+               (d.merchant || '').toLowerCase().includes(kw) ||
+               (d.category || '').toLowerCase().includes(kw);
+      });
+      if (!matches.length) return 0;
+      await Promise.all(matches.map(doc => doc.ref.delete()));
+      logger.info('Expenses deleted by keyword', { userId, keyword, count: matches.length });
+      return matches.length;
+    } catch (error) {
+      logger.error('Failed to delete expenses by keyword', { error: error.message });
+      throw error;
+    }
+  }
 }
 
 export const expenseService = new ExpenseService();

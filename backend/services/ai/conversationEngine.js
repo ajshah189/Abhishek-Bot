@@ -57,6 +57,8 @@ YOUR PERSONALITY:
 WHAT YOU CAN DO (emit these in the actions array):
 {"type":"create_task","title":"...","deadline_text":"raw date","recurrence_text":"raw recurrence","priority":"high|medium|low"}
 {"type":"create_expense","amount":0,"category":"food|travel|shopping|education|health|other","description":"..."}
+{"type":"delete_expense","match":"keyword to find expense by description/merchant/category"} — ONE specific expense.
+{"type":"delete_all_expenses"} — ALL expenses at once. NO match field. Use when user says "remove all expenses", "delete all expenses", "clear my expenses", "reset expenses".
 {"type":"store_memory","key":"...","value":"..."}
 {"type":"complete_task","match":"keywords to find task"}
 {"type":"delete_task","match":"keywords to find task"}
@@ -103,6 +105,8 @@ RULES:
 - GENERAL KNOWLEDGE: You can and should answer general knowledge questions — weather, facts, advice, recommendations, opinions. Do not say "that's outside my scope." You're a sharp chief-of-staff who also happens to know things. For weather, give a useful answer based on season and location (Abhishek is in Ahmedabad, India). E.g. "It's late July in Ahmedabad — expect monsoon rains, humidity, around 30-33°C. Carry an umbrella." For things you genuinely cannot know (live stock prices, real-time scores), say so briefly and suggest where to check.
 - Habits are RECURRING behaviours. Never create_task for a habit.
 - CRITICAL: "remove all habits" / "delete all habits" / "clear habits" → always emit delete_all_habits (no match). NEVER emit delete_habit with match="all" or match="all habits" — that only deletes one.
+- CRITICAL: "remove all expenses" / "delete all expenses" / "clear expenses" / "reset expenses" → always emit delete_all_expenses (no match). NEVER emit delete_expense with match="all" — that only deletes one.
+- "remove [keyword] expense" / "delete [keyword] expense" → emit delete_expense with match="keyword".
 - "remove X habit" / "delete X" (where X is a specific habit name) → emit delete_habit with match="X".
 - Use create_calendar_event for meetings, appointments, or any timed event.
 - When ACTIVE FOLLOW-UP context is present, the user is answering your question — use that to complete the goal, don't ask again.
@@ -117,7 +121,13 @@ HABIT ACTION EXAMPLES:
 "remove meditate habit" → {"type":"delete_habit","match":"meditate"}
 "remove all habits" → {"type":"delete_all_habits"}
 "clear all my habits" → {"type":"delete_all_habits"}
-"delete gym" → {"type":"delete_habit","match":"gym"}`;
+"delete gym" → {"type":"delete_habit","match":"gym"}
+
+EXPENSE ACTION EXAMPLES:
+"remove all expenses" → {"type":"delete_all_expenses"}
+"clear my expenses" → {"type":"delete_all_expenses"}
+"delete the uber expense" → {"type":"delete_expense","match":"uber"}
+"remove food expenses" → {"type":"delete_expense","match":"food"}`;
 
 export class ConversationEngine {
   // ── Session helpers ──────────────────────────────────────────────────────
@@ -396,6 +406,17 @@ export class ConversationEngine {
               description: action.description || ''
             });
             logger.info('create_expense saved', { userId, amount: action.amount, category: action.category });
+            break;
+          }
+          case 'delete_all_expenses': {
+            const count = await expenseService.deleteAll(userId);
+            logger.info('delete_all_expenses completed', { userId, count });
+            break;
+          }
+          case 'delete_expense': {
+            const deleted = await expenseService.deleteByKeyword(userId, action.match || '');
+            if (deleted === 0) logger.warn('delete_expense: no match found', { match: action.match });
+            else logger.info('delete_expense completed', { userId, match: action.match, count: deleted });
             break;
           }
           case 'create_contact': {
