@@ -59,9 +59,11 @@ WHAT YOU CAN DO (emit these in the actions array):
 {"type":"create_expense","amount":0,"category":"food|travel|shopping|education|health|other","description":"..."}
 {"type":"delete_expense","match":"keyword to find expense by description/merchant/category"} — ONE specific expense.
 {"type":"delete_all_expenses"} — ALL expenses at once. NO match field. Use when user says "remove all expenses", "delete all expenses", "clear my expenses", "reset expenses".
+{"type":"delete_expenses_timerange","period":"today|this_week|this_month"} — delete expenses for a specific period. Use when user says "remove today's expenses", "clear this week's spending", "delete this month's expenses".
 {"type":"store_memory","key":"...","value":"..."}
 {"type":"complete_task","match":"keywords to find task"}
 {"type":"delete_task","match":"keywords to find task"}
+{"type":"delete_tasks_timerange","period":"today|this_week|completed"} — delete tasks by period or status. Use when user says "remove today's tasks", "clear this week's tasks", "delete completed tasks".
 {"type":"create_habit","name":"...","recurrence":"daily|weekly|weekdays|..."}
 {"type":"complete_habit","match":"habit name keyword"}
 {"type":"delete_habit","match":"habit name keyword"} — ONE specific habit only. Put the habit's name as the match.
@@ -107,6 +109,12 @@ RULES:
 - CRITICAL: "remove all habits" / "delete all habits" / "clear habits" → always emit delete_all_habits (no match). NEVER emit delete_habit with match="all" or match="all habits" — that only deletes one.
 - CRITICAL: "remove all expenses" / "delete all expenses" / "clear expenses" / "reset expenses" → always emit delete_all_expenses (no match). NEVER emit delete_expense with match="all" — that only deletes one.
 - "remove [keyword] expense" / "delete [keyword] expense" → emit delete_expense with match="keyword".
+- "remove today's expenses" / "clear today's spending" → emit delete_expenses_timerange with period="today".
+- "remove this week's expenses" / "clear this week's spending" → emit delete_expenses_timerange with period="this_week".
+- "remove this month's expenses" / "delete this month's expenses" → emit delete_expenses_timerange with period="this_month".
+- "remove today's tasks" / "clear today's tasks" → emit delete_tasks_timerange with period="today".
+- "remove this week's tasks" / "clear this week's tasks" → emit delete_tasks_timerange with period="this_week".
+- "delete completed tasks" / "remove done tasks" / "clear finished tasks" → emit delete_tasks_timerange with period="completed".
 - "remove X habit" / "delete X" (where X is a specific habit name) → emit delete_habit with match="X".
 - Use create_calendar_event for meetings, appointments, or any timed event.
 - When ACTIVE FOLLOW-UP context is present, the user is answering your question — use that to complete the goal, don't ask again.
@@ -127,7 +135,15 @@ EXPENSE ACTION EXAMPLES:
 "remove all expenses" → {"type":"delete_all_expenses"}
 "clear my expenses" → {"type":"delete_all_expenses"}
 "delete the uber expense" → {"type":"delete_expense","match":"uber"}
-"remove food expenses" → {"type":"delete_expense","match":"food"}`;
+"remove food expenses" → {"type":"delete_expense","match":"food"}
+"remove today's expenses" → {"type":"delete_expenses_timerange","period":"today"}
+"clear this week's spending" → {"type":"delete_expenses_timerange","period":"this_week"}
+"delete this month's expenses" → {"type":"delete_expenses_timerange","period":"this_month"}
+
+TASK DELETE EXAMPLES:
+"remove today's tasks" → {"type":"delete_tasks_timerange","period":"today"}
+"clear this week's tasks" → {"type":"delete_tasks_timerange","period":"this_week"}
+"delete completed tasks" → {"type":"delete_tasks_timerange","period":"completed"}`;
 
 export class ConversationEngine {
   // ── Session helpers ──────────────────────────────────────────────────────
@@ -417,6 +433,29 @@ export class ConversationEngine {
             const deleted = await expenseService.deleteByKeyword(userId, action.match || '');
             if (deleted === 0) logger.warn('delete_expense: no match found', { match: action.match });
             else logger.info('delete_expense completed', { userId, match: action.match, count: deleted });
+            break;
+          }
+          case 'delete_expenses_timerange': {
+            let count = 0;
+            switch (action.period) {
+              case 'today':      count = await expenseService.deleteToday(userId); break;
+              case 'this_week':  count = await expenseService.deleteThisWeek(userId); break;
+              case 'this_month': count = await expenseService.deleteThisMonth(userId); break;
+              case 'all':        count = await expenseService.deleteAll(userId); break;
+              default: logger.warn('delete_expenses_timerange: unknown period', { period: action.period });
+            }
+            logger.info('delete_expenses_timerange completed', { userId, period: action.period, count });
+            break;
+          }
+          case 'delete_tasks_timerange': {
+            let count = 0;
+            switch (action.period) {
+              case 'today':     count = await taskService.deleteToday(userId); break;
+              case 'this_week': count = await taskService.deleteThisWeek(userId); break;
+              case 'completed': count = await taskService.deleteCompleted(userId); break;
+              default: logger.warn('delete_tasks_timerange: unknown period', { period: action.period });
+            }
+            logger.info('delete_tasks_timerange completed', { userId, period: action.period, count });
             break;
           }
           case 'create_contact': {

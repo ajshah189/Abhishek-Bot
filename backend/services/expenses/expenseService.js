@@ -69,6 +69,43 @@ export class ExpenseService {
     }
   }
 
+  async deleteByTimeRange(userId, from, to) {
+    try {
+      const snapshot = await db
+        .collection('expenses')
+        .where('userId', '==', userId.toString())
+        .where('date', '>=', from)
+        .where('date', '<=', to)
+        .get();
+      if (snapshot.empty) return 0;
+      await Promise.all(snapshot.docs.map(doc => doc.ref.delete()));
+      logger.info('Expenses deleted by time range', { userId, from, to, count: snapshot.size });
+      return snapshot.size;
+    } catch (error) {
+      logger.error('Failed to delete expenses by time range', { error: error.message });
+      throw error;
+    }
+  }
+
+  async deleteToday(userId) {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    return this.deleteByTimeRange(userId, start, end);
+  }
+
+  async deleteThisWeek(userId) {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
+    return this.deleteByTimeRange(userId, start, now);
+  }
+
+  async deleteThisMonth(userId) {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    return this.deleteByTimeRange(userId, start, now);
+  }
+
   async deleteAll(userId) {
     try {
       const snapshot = await db

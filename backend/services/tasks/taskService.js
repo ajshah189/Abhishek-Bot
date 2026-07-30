@@ -106,6 +106,54 @@ export class TaskService {
       throw error;
     }
   }
+
+  async deleteCompleted(userId) {
+    try {
+      const snapshot = await db
+        .collection('tasks')
+        .where('userId', '==', userId.toString())
+        .where('status', '==', 'completed')
+        .get();
+      if (snapshot.empty) return 0;
+      await Promise.all(snapshot.docs.map(doc => doc.ref.delete()));
+      logger.info('Completed tasks deleted', { userId, count: snapshot.size });
+      return snapshot.size;
+    } catch (error) {
+      logger.error('Failed to delete completed tasks', { error: error.message });
+      throw error;
+    }
+  }
+
+  async deleteByDeadlineRange(userId, from, to) {
+    try {
+      const snapshot = await db
+        .collection('tasks')
+        .where('userId', '==', userId.toString())
+        .where('deadline', '>=', from)
+        .where('deadline', '<=', to)
+        .get();
+      if (snapshot.empty) return 0;
+      await Promise.all(snapshot.docs.map(doc => doc.ref.delete()));
+      logger.info('Tasks deleted by deadline range', { userId, from, to, count: snapshot.size });
+      return snapshot.size;
+    } catch (error) {
+      logger.error('Failed to delete tasks by deadline range', { error: error.message });
+      throw error;
+    }
+  }
+
+  async deleteToday(userId) {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    return this.deleteByDeadlineRange(userId, start, end);
+  }
+
+  async deleteThisWeek(userId) {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
+    return this.deleteByDeadlineRange(userId, start, now);
+  }
 }
 
 export const taskService = new TaskService();
