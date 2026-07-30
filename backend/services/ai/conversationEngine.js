@@ -248,7 +248,6 @@ export class ConversationEngine {
     // ── Execute actions ────────────────────────────────────────────────────
     this._calendarNote = null;
     this._whatsappLink = null;
-    this._whatsappNote = null;
     await this.executeActions(userId, parsed.actions, tasks, habits);
 
     await conversationMemory.addTurn(userId, 'user', message);
@@ -263,11 +262,8 @@ export class ConversationEngine {
       this._calendarNote = null;
     }
 
-    // Append WhatsApp link or error note
-    if (this._whatsappNote) {
-      reply += '\n\n' + this._whatsappNote;
-      this._whatsappNote = null;
-    } else if (this._whatsappLink) {
+    // Append WhatsApp deep link (functional, not an error message)
+    if (this._whatsappLink) {
       const { url } = this._whatsappLink;
       reply += `\n\n👉 [Tap to send on WhatsApp](${url})`;
       this._whatsappLink = null;
@@ -307,6 +303,10 @@ export class ConversationEngine {
   }
 
   async executeActions(userId, actions, currentTasks, currentHabits) {
+    // Contacts created in this same turn — checked before re-querying Firestore
+    // so that create_contact + send_whatsapp in one turn works without a round-trip.
+    const justCreatedContacts = [];
+
     for (const action of actions) {
       try {
         switch (action.type) {
@@ -360,24 +360,34 @@ export class ConversationEngine {
             break;
           }
           case 'create_contact': {
-            await contactService.create(userId, {
+            const saved = await contactService.create(userId, {
               name: action.name,
               phone: action.phone || '',
               relationship: action.relationship || ''
             });
+            // Track in-turn so send_whatsapp can find it immediately
+            justCreatedContacts.push(saved);
             break;
           }
           case 'send_whatsapp': {
-            const liveContacts = await contactService.getUserContacts(userId);
-            const contact = contactService.matchContact(liveContacts, action.contact_name);
+            // Check same-turn creates first, then fall back to Firestore
+            let contact = contactService.matchContact(justCreatedContacts, action.contact_name);
             if (!contact) {
-              this._whatsappNote = `I don't have a number for ${action.contact_name}. Tell me their number and I'll save it.`;
-            } else if (!contact.phone) {
-              this._whatsappNote = `I have ${contact.name} saved but no phone number. What's their number?`;
-            } else {
+              const liveContacts = await contactService.getUserContacts(userId);
+              contact = contactService.matchContact(liveContacts, action.contact_name);
+            }
+            if (contact?.phone) {
               const dialCode = contact.phone.length === 10 ? `91${contact.phone}` : contact.phone;
               const url = `https://wa.me/${dialCode}?text=${encodeURIComponent(action.message)}`;
               this._whatsappLink = { url, contactName: contact.name, message: action.message };
+            } else {
+              // Don't mutate reply — LLM already wrote a coherent response.
+              // Log so we can diagnose if contacts aren't loading.
+              logger.warn('send_whatsapp: contact not found or no phone', {
+                contact_name: action.contact_name,
+                justCreatedCount: justCreatedContacts.length,
+                contact: contact?.name
+              });
             }
             break;
           }
@@ -467,16 +477,9 @@ export class ConversationEngine {
       }
     });
 
-    // Budget alerts
-    Object.entries(expenseSummary).forEach(([cat, spent]) => {
-      const budget = budgets[cat];
-      if (budget) {
-        const pct = spent / budget;
-        if (pct >= 0.8) {
-          obs.push(`💰 BUDGET ALERT: ${cat} at ₹${Math.round(spent)} of ₹${budget} (${Math.round(pct * 100)}%)`);
-        }
-      }
-    });
+    // Budget alerts intentionally omitted here — spending data with ⚠️ flags
+    // is already in the THIS MONTH'S SPENDING context block. Repeating it in
+    // observations caused the LLM to mention budget in every single reply.
 
     return obs;
   }
