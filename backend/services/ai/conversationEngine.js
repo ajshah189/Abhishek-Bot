@@ -28,7 +28,8 @@ You MUST respond with a single JSON object, no other text:
     {"type": "store_memory", "key": "...", "value": "..."},
     {"type": "complete_task", "match": "words that identify which task"},
     {"type": "delete_task", "match": "words that identify which task"},
-    {"type": "ask_followup", "waiting_for": "short label for what you need", "partial": {"key": "captured so far"}}
+    {"type": "ask_followup", "waiting_for": "short label for what you need", "partial": {"key": "captured so far"}},
+    {"type": "create_calendar_event", "title": "...", "date": "raw date/time text", "end_date": "raw end time text if any", "location": "...", "description": "..."}
   ]
 }
 
@@ -41,7 +42,8 @@ RULES:
 - Match tasks for complete/delete loosely by keywords from their message.
 - Habits are RECURRING behaviours (meditate daily, gym 3x week). Use create_habit for these — never create_task. Use complete_habit when the user says they did a habit ("done meditating", "did my workout"). Use delete_habit when the user says to remove/stop/delete a habit.
 - Use ask_followup ONLY when you genuinely need one specific piece of information to act well (e.g. "plan my week" needs priorities, "set a budget" needs amounts). Do NOT ask follow-ups for simple requests you can handle directly. Never chain more than one follow-up at a time.
-- When ACTIVE FOLLOW-UP context is present in the prompt, the user's message is their answer to your previous question — use that partial data plus their answer to complete the goal, do NOT ask again.`;
+- When ACTIVE FOLLOW-UP context is present in the prompt, the user's message is their answer to your previous question — use that partial data plus their answer to complete the goal, do NOT ask again.
+- Use create_calendar_event when the user mentions a meeting, appointment, call, or any timed event with a date/time. Examples: "Meeting with Riya tomorrow at 4pm" → create_calendar_event. "Remind me to call doctor Friday 11am" → create_calendar_event. Pass date/time as the user's raw words in the date field — the system parses it. If calendar is not connected, just reply naturally that they can use /connectcalendar.`;
 
 export class ConversationEngine {
   // --- Session helpers (Firestore: settings/session_{userId}) ---
@@ -76,12 +78,13 @@ export class ConversationEngine {
 
   async process(userId, chatId, message) {
     // Fetch context + any pending follow-up session in parallel
-    const [recentTurns, memories, tasks, expenseSummary, pendingSession] = await Promise.all([
+    const [recentTurns, memories, tasks, expenseSummary, pendingSession, calendarContext] = await Promise.all([
       conversationMemory.getRecentTurns(userId),
       memoryService.getUserMemories(userId),
       taskService.getUserTasks(userId, 'pending'),
       expenseService.getMonthlySummary(userId),
-      this.getSession(userId)
+      this.getSession(userId),
+      this.getCalendarContext(userId)
     ]);
 
     // If there's an active follow-up, clear it now — executeActions will re-set
@@ -106,7 +109,7 @@ export class ConversationEngine {
       ? `\nACTIVE FOLLOW-UP:\nGoal: ${pendingSession.waiting_for}\nPartial data: ${JSON.stringify(pendingSession.partial || {})}\nThe user is now answering your question — use this to complete the goal.\n`
       : '';
 
-    const contextMessage = `LONG-TERM MEMORY:\n${memoryBlock}\n\nCURRENT PENDING TASKS:\n${taskBlock}\n\nTHIS MONTH'S SPENDING:\n${expenseBlock}${sessionBlock}\n\nUSER MESSAGE: ${message}`;
+    const contextMessage = `LONG-TERM MEMORY:\n${memoryBlock}\n\nCURRENT PENDING TASKS:\n${taskBlock}\n\nTHIS MONTH'S SPENDING:\n${expenseBlock}${calendarContext}${sessionBlock}\n\nUSER MESSAGE: ${message}`;
 
     const messages = [
       { role: 'system', content: SYSTEM_PROMPT },
@@ -230,12 +233,52 @@ export class ConversationEngine {
             });
             break;
           }
+          case 'create_calendar_event': {
+            const { googleCalendarService } = await import('../calendar/googleCalendarService.js');
+            const startTime = parseDate(action.date);
+            const endTime = action.end_date ? parseDate(action.end_date) : null;
+            if (startTime) {
+              const result = await googleCalendarService.createEvent(userId, {
+                title: action.title || 'Event',
+                startTime,
+                endTime,
+                description: action.description || '',
+                location: action.location || ''
+              });
+              if (result?.error === 'not_connected') {
+                this._pendingWarnings = this._pendingWarnings || [];
+                this._pendingWarnings.push('(Calendar not connected — use /connectcalendar to link Google Calendar)');
+              } else if (result?.success && result.link) {
+                this._pendingWarnings = this._pendingWarnings || [];
+                this._pendingWarnings.push(`🗓 [View in Google Calendar](${result.link})`);
+              }
+            }
+            break;
+          }
           default:
             logger.debug('Unknown action type', { type: action.type });
         }
       } catch (error) {
         logger.error('Action execution failed', { action: action.type, error: error.message });
       }
+    }
+  }
+
+  async getCalendarContext(userId) {
+    try {
+      const tokenDoc = await db.collection('google_tokens').doc(userId.toString()).get();
+      if (!tokenDoc.exists) return '';
+      const { googleCalendarService } = await import('../calendar/googleCalendarService.js');
+      const events = await googleCalendarService.listTodayEvents(userId);
+      if (!Array.isArray(events) || !events.length) return '\n\nTODAY\'S CALENDAR: (no events today)';
+      const lines = events.map(e => {
+        const t = new Date(e.start);
+        const time = isNaN(t) ? e.start : t.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+        return `- ${e.title} at ${time}${e.location ? ` @ ${e.location}` : ''}`;
+      }).join('\n');
+      return `\n\nTODAY'S CALENDAR:\n${lines}`;
+    } catch {
+      return '';
     }
   }
 

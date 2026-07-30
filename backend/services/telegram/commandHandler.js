@@ -46,6 +46,15 @@ export class CommandHandler {
         case 'cleanhabits':
           return await this.handleCleanHabits(userId);
 
+        case 'connectcalendar':
+          return await this.handleConnectCalendar(userId);
+
+        case 'calendar':
+          return await this.handleCalendar(userId);
+
+        case 'upcoming':
+          return await this.handleUpcoming(userId);
+
         case 'settings':
           return this.handleSettings();
 
@@ -195,9 +204,17 @@ export class CommandHandler {
 
 💰 *Expenses*
 /expenses - Monthly summary
+/budget [category amount] - View or set budgets
 
 🎯 *Habits*
 /habits - Show all habits
+/streaks - Habit streak tracker
+/cleanhabits - Remove duplicate habits
+
+🗓 *Calendar*
+/connectcalendar - Link Google Calendar
+/calendar - Today's schedule
+/upcoming - Next 10 events
 
 📊 *Analytics*
 /weekly - Weekly report
@@ -210,10 +227,50 @@ export class CommandHandler {
 
 💬 *Natural Commands*
 Just type naturally:
+- "Meeting with Riya tomorrow at 4pm"
 - "Gym tomorrow 6"
 - "Spent ₹450 on dinner"
 - "Remember I like Jain food"
 - "Add task: finish assignment"`;
+  }
+
+  async handleConnectCalendar(userId) {
+    try {
+      const { getAuthUrl } = await import('../calendar/googleAuth.js');
+      const url = getAuthUrl(userId);
+      return `🗓 *Connect Google Calendar*\n\nClick the link below to authorize:\n${url}\n\nAfter connecting, use /calendar to see today's events.`;
+    } catch (err) {
+      logger.error('handleConnectCalendar failed', { error: err.message });
+      return '❌ Could not generate auth link. Try again.';
+    }
+  }
+
+  async handleCalendar(userId) {
+    try {
+      const { googleCalendarService } = await import('../calendar/googleCalendarService.js');
+      const events = await googleCalendarService.listTodayEvents(userId);
+      if (events?.error === 'not_connected') return `${events.message}`;
+      if (events?.error) return `❌ Calendar error: ${events.error}`;
+      if (!events.length) return '📅 No events today. Clear schedule!';
+      return `📅 *Today\'s Calendar*\n\n${googleCalendarService.formatEvents(events)}`;
+    } catch (err) {
+      logger.error('handleCalendar failed', { error: err.message });
+      return '❌ Could not fetch calendar. Try again.';
+    }
+  }
+
+  async handleUpcoming(userId) {
+    try {
+      const { googleCalendarService } = await import('../calendar/googleCalendarService.js');
+      const events = await googleCalendarService.listUpcomingEvents(userId, 10);
+      if (events?.error === 'not_connected') return `${events.message}`;
+      if (events?.error) return `❌ Calendar error: ${events.error}`;
+      if (!events.length) return '📅 No upcoming events.';
+      return `📅 *Upcoming Events*\n\n${googleCalendarService.formatEvents(events)}`;
+    } catch (err) {
+      logger.error('handleUpcoming failed', { error: err.message });
+      return '❌ Could not fetch events. Try again.';
+    }
   }
 
   async handleCleanHabits(userId) {

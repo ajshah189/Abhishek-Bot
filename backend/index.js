@@ -45,6 +45,39 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+// Google OAuth callback
+app.get('/auth/google/callback', async (req, res) => {
+  const { code, state: userId } = req.query;
+  if (!code || !userId) {
+    return res.status(400).send('<h2>Missing code or state. Close this and try again.</h2>');
+  }
+  try {
+    const { handleCallback } = await import('./services/calendar/googleAuth.js');
+    const { telegramService } = await import('./services/telegram/telegramService.js');
+    const { db } = await import('./config/firebase.js');
+
+    const result = await handleCallback(code, userId);
+    if (result.success) {
+      // Look up chatId so we can message the user
+      try {
+        const userDoc = await db.collection('users').doc(userId.toString()).get();
+        const chatId = userDoc.data()?.telegramId;
+        if (chatId) {
+          await telegramService.sendMessage(chatId, '✅ Google Calendar connected! Try /calendar to see today\'s events.');
+        }
+      } catch (e) {
+        console.error('OAuth: failed to notify user', e.message);
+      }
+      return res.send('<h2 style="font-family:sans-serif;color:green">✅ Google Calendar connected! You can close this tab and return to Telegram.</h2>');
+    } else {
+      return res.status(500).send(`<h2 style="font-family:sans-serif;color:red">❌ Authorization failed: ${result.error}</h2>`);
+    }
+  } catch (error) {
+    console.error('OAuth callback error:', error.message);
+    return res.status(500).send('<h2 style="font-family:sans-serif;color:red">❌ Something went wrong. Please try again.</h2>');
+  }
+});
+
 app.use((req, res) => res.status(404).json({ error: 'not found' }));
 
 // ── Start server ───────────────────────────────────────────────────────────
