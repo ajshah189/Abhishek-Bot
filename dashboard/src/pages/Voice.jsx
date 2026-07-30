@@ -10,6 +10,41 @@ const isStandalone =
   window.matchMedia('(display-mode: standalone)').matches ||
   window.navigator.standalone === true;
 
+const WA_LINK_RE = /\n\n👉 \[Tap to send on WhatsApp\]\((https:\/\/wa\.me\/[^)]+)\)/;
+
+function ReplyBubble({ text, typing, onDone }) {
+  const waMatch = text.match(WA_LINK_RE);
+  const cleanText = waMatch ? text.slice(0, text.indexOf('\n\n👉 [Tap to send on WhatsApp]')).trim() : text;
+  const waUrl = waMatch?.[1];
+
+  return (
+    <div style={{ alignSelf: 'flex-start', background: '#1a1a2e', border: '1px solid rgba(233,69,96,0.25)', borderRadius: '16px 16px 16px 4px', padding: '10px 14px', maxWidth: '85%', fontSize: 14, color: '#cbd5e0', lineHeight: 1.5 }}>
+      {typing ? <TypingText text={cleanText} onDone={onDone} /> : cleanText}
+      {waUrl && (
+        <a
+          href={waUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: 'block',
+            marginTop: 10,
+            padding: '8px 14px',
+            background: '#25D366',
+            color: '#fff',
+            borderRadius: 20,
+            textDecoration: 'none',
+            fontWeight: 600,
+            fontSize: 13,
+            textAlign: 'center'
+          }}
+        >
+          👉 Tap to send on WhatsApp
+        </a>
+      )}
+    </div>
+  );
+}
+
 function TypingText({ text, onDone }) {
   const [displayed, setDisplayed] = useState('');
   useEffect(() => {
@@ -178,9 +213,7 @@ export default function Voice() {
             <div style={{ alignSelf: 'flex-end', background: '#2d2d44', borderRadius: '16px 16px 4px 16px', padding: '10px 14px', maxWidth: '80%', fontSize: 14, color: '#e2e8f0' }}>
               {item.transcript}
             </div>
-            <div style={{ alignSelf: 'flex-start', background: '#1a1a2e', border: '1px solid rgba(233,69,96,0.25)', borderRadius: '16px 16px 16px 4px', padding: '10px 14px', maxWidth: '85%', fontSize: 14, color: '#cbd5e0', lineHeight: 1.5 }}>
-              {item.reply}
-            </div>
+            <ReplyBubble text={item.reply} typing={false} />
           </div>
         ))}
 
@@ -203,11 +236,7 @@ export default function Voice() {
             <div style={{ alignSelf: 'flex-end', background: '#2d2d44', borderRadius: '16px 16px 4px 16px', padding: '10px 14px', maxWidth: '80%', fontSize: 14, color: '#e2e8f0' }}>
               {lastTranscript}
             </div>
-            <div style={{ alignSelf: 'flex-start', background: '#1a1a2e', border: '1px solid rgba(233,69,96,0.25)', borderRadius: '16px 16px 16px 4px', padding: '10px 14px', maxWidth: '85%', fontSize: 14, color: '#cbd5e0', lineHeight: 1.5 }}>
-              {typing ? (
-                <TypingText text={lastReply} onDone={() => setTyping(false)} />
-              ) : lastReply}
-            </div>
+            <ReplyBubble text={lastReply} typing={typing} onDone={() => setTyping(false)} />
           </div>
         )}
 

@@ -96,7 +96,15 @@ export class TelegramHandler {
 
       // ── Conversation brain ────────────────────────────────────────────────
       const reply = await conversationEngine.process(userId, chatId, message);
-      await telegramService.sendMessage(chatId, reply);
+
+      // If the reply contains a WhatsApp deep link, send it as a tappable button
+      const waMatch = reply.match(/\n\n👉 \[Tap to send on WhatsApp\]\((https:\/\/wa\.me\/[^\)]+)\)/);
+      if (waMatch) {
+        const textPart = reply.slice(0, reply.indexOf('\n\n👉 [Tap to send on WhatsApp]')).trim();
+        await telegramService.sendMessageWithButton(chatId, textPart || reply, '👉 Send on WhatsApp', waMatch[1]);
+      } else {
+        await telegramService.sendMessage(chatId, reply);
+      }
 
       return { ok: true };
     } catch (error) {

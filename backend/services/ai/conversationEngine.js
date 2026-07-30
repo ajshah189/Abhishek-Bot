@@ -10,6 +10,7 @@ import { memoryService } from '../memory/memoryService.js';
 import { taskService } from '../tasks/taskService.js';
 import { expenseService } from '../expenses/expenseService.js';
 import { habitService } from '../habits/habitService.js';
+import { contactService } from '../contacts/contactService.js';
 
 // ── IST helpers ────────────────────────────────────────────────────────────
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
@@ -62,6 +63,8 @@ WHAT YOU CAN DO (emit these in the actions array):
 {"type":"delete_habit","match":"habit name keyword"} — ONE specific habit only. Put the habit's name as the match.
 {"type":"delete_all_habits"} — ALL habits at once. NO match field. Use this (not delete_habit) when user says "remove all habits", "delete all habits", "clear all my habits", "delete everything".
 {"type":"create_calendar_event","title":"...","date":"raw date/time","end_date":"raw end time","location":"...","description":"..."}
+{"type":"create_contact","name":"...","phone":"...","relationship":"..."} — save a person's contact. Use when user shares a phone number for someone.
+{"type":"send_whatsapp","contact_name":"...","message":"..."} — draft and send a WhatsApp message. Match contact_name to KNOWN CONTACTS in context. Draft a natural, concise message from what the user wants to say.
 {"type":"ask_followup","waiting_for":"label","partial":{}}
 
 RESPONSE FORMAT — always valid JSON, no other text:
@@ -79,11 +82,17 @@ RULES:
   - Task: "Added: 'Submit ops report' due Friday [high]."
   - Habit: "Gym habit created, daily. I'll track your streak."
   - Use the spending data already in context to give the budget figure — don't say you can't see it.
+- BUDGET MENTIONS: Only bring up budgets when the user is talking about spending, logging an expense, or explicitly asking about finances. If they ask about tasks, weather, calendar, habits, or anything unrelated to money — do NOT mention budgets. One mention per relevant conversation is enough — don't nag.
+- PROACTIVE OBSERVATIONS: That block is for your awareness, not a dump to paste into every reply. Only surface an observation if it is directly relevant to what the user just said or asked.
+- GENERAL KNOWLEDGE: You can and should answer general knowledge questions — weather, facts, advice, recommendations, opinions. Do not say "that's outside my scope." You're a sharp chief-of-staff who also happens to know things. For weather, give a useful answer based on season and location (Abhishek is in Ahmedabad, India). E.g. "It's late July in Ahmedabad — expect monsoon rains, humidity, around 30-33°C. Carry an umbrella." For things you genuinely cannot know (live stock prices, real-time scores), say so briefly and suggest where to check.
 - Habits are RECURRING behaviours. Never create_task for a habit.
 - CRITICAL: "remove all habits" / "delete all habits" / "clear habits" → always emit delete_all_habits (no match). NEVER emit delete_habit with match="all" or match="all habits" — that only deletes one.
 - "remove X habit" / "delete X" (where X is a specific habit name) → emit delete_habit with match="X".
 - Use create_calendar_event for meetings, appointments, or any timed event.
 - When ACTIVE FOLLOW-UP context is present, the user is answering your question — use that to complete the goal, don't ask again.
+- When the user wants to message someone, use send_whatsapp. Draft a natural, brief message — don't over-explain or add filler. Match the person's name against KNOWN CONTACTS in context.
+- When the user shares a phone number for a person ("Riya's number is 9876543210"), emit create_contact with their name and number. Don't just store_memory for phone numbers.
+- For send_whatsapp: in your reply, just confirm what you drafted — the system will add the WhatsApp link automatically. Do NOT include raw URLs in your reply text.
 
 HABIT ACTION EXAMPLES:
 "remove meditate habit" → {"type":"delete_habit","match":"meditate"}
@@ -123,13 +132,14 @@ export class ConversationEngine {
   // ── Main entry point ─────────────────────────────────────────────────────
 
   async process(userId, chatId, message) {
-    const [recentTurns, memories, tasks, expenseSummary, habits, pendingSession,
+    const [recentTurns, memories, tasks, expenseSummary, habits, contacts, pendingSession,
            calendarContext, activeDoc, journalLines, budgets] = await Promise.all([
       conversationMemory.getRecentTurns(userId),
       memoryService.getUserMemories(userId),
       taskService.getUserTasks(userId, 'pending'),
       expenseService.getMonthlySummary(userId),
       habitService.getUserHabits(userId).catch(() => []),
+      contactService.getUserContacts(userId).catch(() => []),
       this.getSession(userId),
       this.getCalendarContext(userId),
       this.getActiveDocContext(userId),
@@ -183,6 +193,11 @@ export class ConversationEngine {
         }).join(', ')
       : '(no expenses this month)';
 
+    // ── Contacts ───────────────────────────────────────────────────────────
+    const contactBlock = contacts.length
+      ? 'KNOWN CONTACTS:\n' + contacts.map(c => `- ${c.name}: ${c.phone || '(no phone)'}${c.relationship ? ` [${c.relationship}]` : ''}`).join('\n')
+      : 'KNOWN CONTACTS: (none saved)';
+
     // ── Memory ─────────────────────────────────────────────────────────────
     const memoryBlock = this.selectMemories(memories, message)
       .map(m => `- ${m.key || m.category}: ${m.value}`).join('\n') || '(none yet)';
@@ -207,6 +222,7 @@ export class ConversationEngine {
       `THIS MONTH'S SPENDING: ${expenseBlock}`,
       journalLines ? `RECENT JOURNAL:\n${journalLines}` : null,
       `LONG-TERM MEMORY:\n${memoryBlock}`,
+      contactBlock,
       activeDoc ? activeDoc.trim() : null,
       obsBlock || null,
       sessionBlock || null,
@@ -230,19 +246,34 @@ export class ConversationEngine {
     const parsed = this.parseResponse(raw);
 
     // ── Execute actions ────────────────────────────────────────────────────
+    this._calendarNote = null;
+    this._whatsappLink = null;
+    this._whatsappNote = null;
     await this.executeActions(userId, parsed.actions, tasks, habits);
 
     await conversationMemory.addTurn(userId, 'user', message);
     await conversationMemory.addTurn(userId, 'assistant', parsed.reply);
 
-    // ── Budget warnings surfaced during actions ────────────────────────────
-    if (this._pendingWarnings && this._pendingWarnings.length) {
-      parsed.reply += '\n\n' + this._pendingWarnings.join('\n');
-      this._pendingWarnings = [];
+    // ── Reply guardrails ───────────────────────────────────────────────────
+    let reply = this.cleanReply(parsed.reply, recentTurns.length);
+
+    // Append calendar link cleanly after the reply (separate from LLM text)
+    if (this._calendarNote) {
+      reply += '\n' + this._calendarNote;
+      this._calendarNote = null;
     }
 
-    // ── Reply guardrails ───────────────────────────────────────────────────
-    return this.cleanReply(parsed.reply, recentTurns.length);
+    // Append WhatsApp link or error note
+    if (this._whatsappNote) {
+      reply += '\n\n' + this._whatsappNote;
+      this._whatsappNote = null;
+    } else if (this._whatsappLink) {
+      const { url } = this._whatsappLink;
+      reply += `\n\n👉 [Tap to send on WhatsApp](${url})`;
+      this._whatsappLink = null;
+    }
+
+    return reply;
   }
 
   cleanReply(reply, priorTurnCount) {
@@ -326,11 +357,27 @@ export class ConversationEngine {
               description: action.description || ''
             });
             logger.info('create_expense saved', { userId, amount: action.amount, category: action.category });
-            const { budgetService } = await import('../expenses/budgetService.js');
-            const warning = await budgetService.checkBudgetWarning(userId, action.category || 'other');
-            if (warning) {
-              this._pendingWarnings = this._pendingWarnings || [];
-              this._pendingWarnings.push(warning);
+            break;
+          }
+          case 'create_contact': {
+            await contactService.create(userId, {
+              name: action.name,
+              phone: action.phone || '',
+              relationship: action.relationship || ''
+            });
+            break;
+          }
+          case 'send_whatsapp': {
+            const liveContacts = await contactService.getUserContacts(userId);
+            const contact = contactService.matchContact(liveContacts, action.contact_name);
+            if (!contact) {
+              this._whatsappNote = `I don't have a number for ${action.contact_name}. Tell me their number and I'll save it.`;
+            } else if (!contact.phone) {
+              this._whatsappNote = `I have ${contact.name} saved but no phone number. What's their number?`;
+            } else {
+              const dialCode = contact.phone.length === 10 ? `91${contact.phone}` : contact.phone;
+              const url = `https://wa.me/${dialCode}?text=${encodeURIComponent(action.message)}`;
+              this._whatsappLink = { url, contactName: contact.name, message: action.message };
             }
             break;
           }
@@ -373,11 +420,9 @@ export class ConversationEngine {
                 location: action.location || ''
               });
               if (result?.error === 'not_connected') {
-                this._pendingWarnings = this._pendingWarnings || [];
-                this._pendingWarnings.push('(Calendar not connected — use /connectcalendar to link Google Calendar)');
+                this._calendarNote = '(Calendar not connected — use /connectcalendar to link Google Calendar)';
               } else if (result?.success && result.link) {
-                this._pendingWarnings = this._pendingWarnings || [];
-                this._pendingWarnings.push(`🗓 [View in Google Calendar](${result.link})`);
+                this._calendarNote = `📅 [View in Google Calendar](${result.link})`;
               }
             }
             break;
