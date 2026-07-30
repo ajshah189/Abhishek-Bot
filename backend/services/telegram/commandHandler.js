@@ -67,6 +67,9 @@ export class CommandHandler {
         case 'upcoming':
           return await this.handleUpcoming(userId);
 
+        case 'savecontact':
+          return await this.handleSaveContact(userId, chatId, args);
+
         case 'news':
           return await this.handleNews(userId, chatId, args);
 
@@ -242,6 +245,9 @@ Search
 /search <query> - Search all data
 /news [topic] - Latest news headlines
 
+Contacts
+/savecontact [name] - Send saved contact as .vcf to add to phone
+
 Utilities
 /clear - Reset conversation memory
 /settings - Manage settings
@@ -401,6 +407,23 @@ Spending: ${spendBlock}`;
     );
 
     return summary + calendarFootnote;
+  }
+
+  async handleSaveContact(userId, chatId, args) {
+    if (!args.length) return '📱 Usage: /savecontact [name]\nExample: /savecontact Riya';
+    const name = args.join(' ');
+    try {
+      const { contactService } = await import('../contacts/contactService.js');
+      const contacts = await contactService.getUserContacts(userId);
+      const contact = contactService.matchContact(contacts, name);
+      if (!contact) return `No contact named "${name}" found. Save them first by saying "save [name] [number]".`;
+      if (!contact.phone) return `Found ${contact.name} but they have no phone number saved.`;
+      await telegramService.sendContactVCF(chatId, contact.name, contact.phone, contact.email || '');
+      return null; // VCF file already sent
+    } catch (err) {
+      logger.error('handleSaveContact failed', { error: err.message });
+      return '❌ Could not send contact file. Try again.';
+    }
   }
 
   async handleNews(userId, chatId, args) {

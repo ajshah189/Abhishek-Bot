@@ -11,6 +11,7 @@ import { taskService } from '../tasks/taskService.js';
 import { expenseService } from '../expenses/expenseService.js';
 import { habitService } from '../habits/habitService.js';
 import { contactService } from '../contacts/contactService.js';
+import { telegramService } from '../telegram/telegramService.js';
 
 // ── IST helpers ────────────────────────────────────────────────────────────
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
@@ -70,6 +71,7 @@ WHAT YOU CAN DO (emit these in the actions array):
 {"type":"delete_all_habits"} — ALL habits at once. NO match field. Use this (not delete_habit) when user says "remove all habits", "delete all habits", "clear all my habits", "delete everything".
 {"type":"create_calendar_event","title":"...","date":"raw date/time","end_date":"raw end time","location":"...","description":"..."}
 {"type":"create_contact","name":"...","phone":"...","relationship":"..."} — save a person's contact. Use when user shares a phone number for someone.
+{"type":"save_to_phone","name":"...","phone":"...","email":"..."} — generate and send a .vcf file so user can tap to add the contact to their phone. Use when user says "save to my phone", "add to contacts", "send me the contact". Can combine with create_contact in the same actions array.
 {"type":"send_whatsapp","contact_name":"...","message":"..."} — draft and send a WhatsApp message. Match contact_name to KNOWN CONTACTS in context. Draft a natural, concise message from what the user wants to say.
 {"type":"web_search","query":"concise search query 3-6 words"} — search the web for current information.
 {"type":"ask_followup","waiting_for":"label","partial":{}}
@@ -123,6 +125,7 @@ RULES:
 - Always cite sources briefly when answering from web search results.
 - When the user wants to message someone, use send_whatsapp. Draft a natural, brief message — don't over-explain or add filler. Match the person's name against KNOWN CONTACTS in context.
 - When the user shares a phone number for a person ("Riya's number is 9876543210"), emit create_contact with their name and number. Don't just store_memory for phone numbers.
+- When the user says "save [name] to my phone" / "add to contacts" / "send me [name]'s contact as vcf", emit save_to_phone. If the contact also needs saving to Firestore, emit both create_contact AND save_to_phone in the same actions array.
 - For send_whatsapp: in your reply, just confirm what you drafted — the system will add the WhatsApp link automatically. Do NOT include raw URLs in your reply text.
 
 HABIT ACTION EXAMPLES:
@@ -295,6 +298,7 @@ export class ConversationEngine {
     this._whatsappLink = null;
     this._searchResults = null;
     this._searchQuery = null;
+    this._vcfContact = null;
     await this.executeActions(userId, parsed.actions, tasks, habits);
 
     // ── Second LLM call: synthesise search results ─────────────────────────
@@ -332,6 +336,15 @@ export class ConversationEngine {
       const { url } = this._whatsappLink;
       reply += `\n\n👉 [Tap to send on WhatsApp](${url})`;
       this._whatsappLink = null;
+    }
+
+    // Send VCF contact file (fire-and-forget alongside the text reply)
+    if (this._vcfContact) {
+      const { name, phone, email } = this._vcfContact;
+      telegramService.sendContactVCF(chatId, name, phone, email).catch(err =>
+        logger.error('sendContactVCF failed', { error: err.message })
+      );
+      this._vcfContact = null;
     }
 
     return reply;
@@ -464,8 +477,25 @@ export class ConversationEngine {
               phone: action.phone || '',
               relationship: action.relationship || ''
             });
-            // Track in-turn so send_whatsapp can find it immediately
+            // Track in-turn so send_whatsapp / save_to_phone can find it immediately
             justCreatedContacts.push(saved);
+            break;
+          }
+          case 'save_to_phone': {
+            // Resolve phone from action, or fall back to a just-created/stored contact
+            let { name, phone, email } = action;
+            if (!phone) {
+              const match = contactService.matchContact(
+                [...justCreatedContacts, ...(await contactService.getUserContacts(userId))],
+                name
+              );
+              if (match) { phone = match.phone; email = email || match.email || ''; }
+            }
+            if (name && phone) {
+              this._vcfContact = { name, phone, email: email || '' };
+            } else {
+              logger.warn('save_to_phone: missing name or phone', { name, phone });
+            }
             break;
           }
           case 'send_whatsapp': {
