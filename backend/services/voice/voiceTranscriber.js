@@ -7,6 +7,32 @@ import { getTelegramApiUrl, telegramConfig } from '../../config/telegram.js';
 import { logger } from '../../utils/logger.js';
 
 export class VoiceTranscriber {
+  async transcribeAudioBuffer(buffer, filename = 'voice.webm') {
+    try {
+      const form = new FormData();
+      form.append('file', Buffer.from(buffer), { filename });
+      form.append('model', 'whisper-large-v3-turbo');
+
+      const raw = await axios.post(
+        'https://api.groq.com/openai/v1/audio/transcriptions',
+        form,
+        {
+          headers: {
+            ...form.getHeaders(),
+            Authorization: `Bearer ${process.env.GROQ_API_KEY}`
+          }
+        }
+      );
+
+      const text = raw.data?.text?.trim();
+      logger.info('Audio buffer transcribed', { filename, length: text?.length || 0 });
+      return text || null;
+    } catch (error) {
+      logger.error('Buffer transcription failed', { error: error.message });
+      return null;
+    }
+  }
+
   async transcribeTelegramVoice(fileId) {
     try {
       // 1. Get the file path from Telegram

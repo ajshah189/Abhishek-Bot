@@ -2,6 +2,8 @@ import { config } from 'dotenv';
 config();
 
 import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -21,6 +23,20 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason) => {
   console.error('UNHANDLED_REJECTION (server stays up):', reason);
 });
+
+// ── Middleware ─────────────────────────────────────────────────────────────
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+const apiCors = cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] });
+
+function requireApiKey(req, res, next) {
+  const key = req.headers['x-api-key'];
+  if (!key || key !== process.env.VOICE_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
 
 // ── Express routes ─────────────────────────────────────────────────────────
 
@@ -75,6 +91,47 @@ app.get('/auth/google/callback', async (req, res) => {
   } catch (error) {
     console.error('OAuth callback error:', error.message);
     return res.status(500).send('<h2 style="font-family:sans-serif;color:red">❌ Something went wrong. Please try again.</h2>');
+  }
+});
+
+// ── Voice API ──────────────────────────────────────────────────────────────
+
+// POST /api/voice — multipart: audio file + userId field
+app.options('/api/voice', apiCors);
+app.post('/api/voice', apiCors, requireApiKey, upload.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No audio file' });
+    const userId = req.body?.userId;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+
+    const { voiceTranscriber } = await import('./services/voice/voiceTranscriber.js');
+    const { conversationEngine } = await import('./services/ai/conversationEngine.js');
+
+    const transcript = await voiceTranscriber.transcribeAudioBuffer(req.file.buffer, req.file.originalname || 'voice.webm');
+    if (!transcript) return res.status(422).json({ error: 'Transcription failed or empty' });
+
+    const reply = await conversationEngine.process(userId, userId, transcript);
+    res.json({ transcript, reply });
+  } catch (error) {
+    console.error('API_VOICE_ERR:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/text — JSON: { message, userId }
+app.options('/api/text', apiCors);
+app.post('/api/text', apiCors, requireApiKey, async (req, res) => {
+  try {
+    const { message, userId } = req.body || {};
+    if (!message) return res.status(400).json({ error: 'message required' });
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+
+    const { conversationEngine } = await import('./services/ai/conversationEngine.js');
+    const reply = await conversationEngine.process(userId, userId, message);
+    res.json({ reply });
+  } catch (error) {
+    console.error('API_TEXT_ERR:', error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 
