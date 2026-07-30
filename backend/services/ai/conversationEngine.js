@@ -58,9 +58,9 @@ WHAT YOU CAN DO (emit these in the actions array):
 {"type":"complete_task","match":"keywords to find task"}
 {"type":"delete_task","match":"keywords to find task"}
 {"type":"create_habit","name":"...","recurrence":"daily|weekly|weekdays|..."}
-{"type":"complete_habit","match":"keywords to find habit"}
-{"type":"delete_habit","match":"keywords to find habit"}
-{"type":"delete_all_habits"} — use when user says "remove all habits" / "clear all habits" / "delete everything"
+{"type":"complete_habit","match":"habit name keyword"}
+{"type":"delete_habit","match":"habit name keyword"} — ONE specific habit only. Put the habit's name as the match.
+{"type":"delete_all_habits"} — ALL habits at once. NO match field. Use this (not delete_habit) when user says "remove all habits", "delete all habits", "clear all my habits", "delete everything".
 {"type":"create_calendar_event","title":"...","date":"raw date/time","end_date":"raw end time","location":"...","description":"..."}
 {"type":"ask_followup","waiting_for":"label","partial":{}}
 
@@ -71,13 +71,20 @@ RULES:
 - Actions can be empty if just chatting or answering a question.
 - For tasks: always extract a clear title. Never "Untitled Task."
 - Keep deadline_text and date as raw words — the system parses them.
-- Match tasks/habits for complete/delete loosely by keywords.
+- Match tasks/habits for complete/delete loosely by keywords (use the habit's actual name).
 - When answering about tasks/expenses/calendar/habits, use ACTUAL DATA in context. Don't invent.
 - Make your best judgment and act — don't over-ask. You're a chief-of-staff, not a waiter.
 - Habits are RECURRING behaviours. Never create_task for a habit.
-- Use delete_all_habits when the user clearly wants ALL habits removed at once.
+- CRITICAL: "remove all habits" / "delete all habits" / "clear habits" → always emit delete_all_habits (no match). NEVER emit delete_habit with match="all" or match="all habits" — that only deletes one.
+- "remove X habit" / "delete X" (where X is a specific habit name) → emit delete_habit with match="X".
 - Use create_calendar_event for meetings, appointments, or any timed event.
-- When ACTIVE FOLLOW-UP context is present, the user is answering your question — use that to complete the goal, don't ask again.`;
+- When ACTIVE FOLLOW-UP context is present, the user is answering your question — use that to complete the goal, don't ask again.
+
+HABIT ACTION EXAMPLES:
+"remove meditate habit" → {"type":"delete_habit","match":"meditate"}
+"remove all habits" → {"type":"delete_all_habits"}
+"clear all my habits" → {"type":"delete_all_habits"}
+"delete gym" → {"type":"delete_habit","match":"gym"}`;
 
 export class ConversationEngine {
   // ── Session helpers ──────────────────────────────────────────────────────
@@ -285,21 +292,25 @@ export class ConversationEngine {
             break;
           }
           case 'complete_habit': {
-            const habits = currentHabits || await habitService.getUserHabits(userId);
-            const h = habitService.matchHabit(habits, action.match);
-            if (h) await habitService.markComplete(h.id || h._docId);
+            const liveHabits = await habitService.getUserHabits(userId);
+            const h = habitService.matchHabit(liveHabits, action.match);
+            if (h) await habitService.markComplete(h._docId || h.id);
+            else logger.warn('complete_habit: no match', { match: action.match });
             break;
           }
           case 'delete_habit': {
-            const habits = currentHabits || await habitService.getUserHabits(userId);
-            const h = habitService.matchHabit(habits, action.match);
-            if (h) await habitService.delete(h.id || h._docId);
+            const liveHabits = await habitService.getUserHabits(userId);
+            const h = habitService.matchHabit(liveHabits, action.match);
+            if (h) await habitService.delete(h._docId || h.id);
+            else logger.warn('delete_habit: no match', { match: action.match });
             break;
           }
           case 'delete_all_habits': {
-            const habits = currentHabits || await habitService.getUserHabits(userId);
-            await Promise.all(habits.map(h => habitService.delete(h.id || h._docId)));
-            logger.info('All habits deleted', { userId, count: habits.length });
+            const liveHabits = await habitService.getUserHabits(userId);
+            if (liveHabits.length > 0) {
+              await Promise.all(liveHabits.map(h => habitService.delete(h._docId || h.id)));
+              logger.info('All habits deleted', { userId, count: liveHabits.length });
+            }
             break;
           }
           case 'create_expense': {
