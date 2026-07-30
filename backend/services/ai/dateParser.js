@@ -52,12 +52,21 @@ export function computeNextDue(rule, from = new Date()) {
   return null;
 }
 
+// Cloud Run runs in UTC. chrono-node interprets hours relative to the server
+// clock, so "8am" → 08:00 UTC = 13:30 IST. Fix: shift the reference date
+// forward by IST offset before parsing (so "today/tomorrow" resolve correctly
+// in IST), then shift the parsed result back by the same amount so
+// .toISOString() produces the correct UTC equivalent of the stated IST time.
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000; // UTC+5:30
+
 export function parseDate(text, referenceDate = new Date()) {
   if (!text) return null;
   try {
-    const results = chrono.parse(text, referenceDate, { forwardDate: true });
+    const istRef = new Date(referenceDate.getTime() + IST_OFFSET_MS);
+    const results = chrono.parse(text, istRef, { forwardDate: true });
     if (results.length > 0) {
-      return results[0].start.date();
+      const parsed = results[0].start.date();
+      return new Date(parsed.getTime() - IST_OFFSET_MS);
     }
   } catch (error) {
     logger.debug('Date parse failed', { text, error: error.message });
