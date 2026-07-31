@@ -572,7 +572,7 @@ Evening Review: 09:00 PM
     const usage = getTokenUsage();
     return `📊 *LLM Usage*
 
-Primary: Gemini 2.5 Flash (1,500 req/day free)
+Primary: Gemini 2.5 Flash Lite (1,500 req/day, 10 RPM free)
 Fallback: Groq llama-3.3-70b (100K tokens/day free)
 
 Calls today: *${usage.used}*

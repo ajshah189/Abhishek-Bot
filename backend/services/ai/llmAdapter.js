@@ -11,7 +11,7 @@ const gemini = process.env.GEMINI_API_KEY
 
 // ── Gemini RPM rate limiter (free tier: 5 req/min) ────────────────────────────
 const geminiCallTimes = [];
-const GEMINI_RPM = 5;
+const GEMINI_RPM = 10;
 
 async function waitForGeminiSlot() {
   const now = Date.now();
@@ -91,7 +91,7 @@ export class LLMAdapter {
     await waitForGeminiSlot(); // throws immediately if wait > 5s → Groq fallback
 
     const model = gemini.getGenerativeModel({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-flash-lite',
       generationConfig: { temperature, maxOutputTokens: 1024 }
     });
 
