@@ -295,11 +295,13 @@ Quick capture (no slash needed):
 
   async handleContacts(userId, args) {
     const { contactService } = await import('../contacts/contactService.js');
+    const uid = userId.toString();
+    console.log('CONTACTS_QUERY userId:', uid, typeof uid);
 
     if (args.length > 0 && args[0] === 'search') {
       const query = args.slice(1).join(' ');
       if (!query) return 'Usage: /contacts search [name]';
-      const results = await contactService.searchContacts(userId, query);
+      const results = await contactService.searchContacts(uid, query);
       if (!results.length) return `No contacts matching "${query}"`;
       let msg = `🔍 Contacts matching "${query}":\n\n`;
       results.slice(0, 10).forEach((c, i) => {
@@ -308,7 +310,7 @@ Quick capture (no slash needed):
       return msg;
     }
 
-    const contacts = await contactService.getUserContacts(userId);
+    const contacts = await contactService.getUserContacts(uid);
     if (!contacts.length) return '📱 No contacts saved. Say "save [name]\'s number [number]" to add one.';
 
     let msg = `📱 Contacts (${contacts.length})\n\n`;

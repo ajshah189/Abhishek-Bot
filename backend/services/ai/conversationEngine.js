@@ -250,6 +250,44 @@ export class ConversationEngine {
       return { reply: `Opening ${openMatch[1].trim()}`, quickAction: { label, url }, whatsappLink: null };
     }
 
+    // "message/tell/whatsapp [name] [text]" or "message [name] on whatsapp [text]"
+    const waMatch = message.match(/^(?:message|tell|whatsapp|send)\s+(.+?)\s+(?:on\s+whatsapp\s*,?\s*|saying\s+)(.+)/i) ||
+                    message.match(/^(?:message|tell|whatsapp|send)\s+(.+?)\s+on\s+whatsapp$/i);
+    if (waMatch) {
+      const contactName = waMatch[1].replace(/\s+on$/i, '').trim();
+      const messageText = waMatch[2]?.trim() || '';
+      const c = this.matchContact(await getContacts(), contactName);
+      if (c?.phone) {
+        if (!messageText) {
+          return { reply: `What should I tell ${c.name}?`, quickAction: null, whatsappLink: null };
+        }
+        const dialCode = c.phone.length === 10 ? `91${c.phone}` : c.phone;
+        const url = `https://wa.me/${dialCode}?text=${encodeURIComponent(messageText)}`;
+        return { reply: `Message to ${c.name}: "${messageText}"`, quickAction: null, whatsappLink: { url } };
+      }
+      return { reply: `I don't have ${contactName}'s number. Save it with "save ${contactName}'s number [number]"`, quickAction: null, whatsappLink: null };
+    }
+
+    // "set timer [X] mins/seconds"
+    const timerMatch = message.match(/^set\s+(?:a\s+)?timer\s+(?:for\s+|to\s+)?(\d+)\s*(?:min|mins|minutes|sec|secs|seconds)/i);
+    if (timerMatch) {
+      const num = parseInt(timerMatch[1]);
+      const isSeconds = /sec/i.test(timerMatch[0]);
+      const label = isSeconds ? `⏱️ Set ${num}s timer` : `⏱️ Set ${num}min timer`;
+      const query = isSeconds ? `set timer ${num} seconds` : `set timer ${num} minutes`;
+      return { reply: `${num}-${isSeconds ? 'second' : 'minute'} timer`, quickAction: { label, url: `https://www.google.com/search?q=${encodeURIComponent(query)}` }, whatsappLink: null };
+    }
+
+    // "save [name]'s number [number]"
+    const saveMatch = message.match(/^save\s+(.+?)(?:'s)?\s+(?:number|phone|contact)\s+(\d[\d\s\-+]+)/i);
+    if (saveMatch) {
+      const name  = saveMatch[1].trim();
+      const phone = saveMatch[2].replace(/[\s\-]/g, '').replace(/^\+91/, '').replace(/^91(?=\d{10}$)/, '');
+      await contactService.create(userId.toString(), { name, phone, relationship: 'contact' });
+      contextCache.invalidate(userId);
+      return { reply: `Saved ${name}'s number: ${phone}`, quickAction: null, whatsappLink: null };
+    }
+
     return null; // not a direct action — fall through to LLM
   }
 
