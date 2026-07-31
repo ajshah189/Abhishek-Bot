@@ -66,25 +66,29 @@ export class LLMAdapter {
   async callGemini(messages, temperature) {
     if (!gemini) throw new Error('Gemini not configured');
 
+    const systemMsg = messages.find(m => m.role === 'system')?.content || '';
+    const chatMsgs  = messages.filter(m => m.role !== 'system');
+
+    // Prepend system prompt as first user message — avoids systemInstruction
+    // format variations across SDK versions (structured vs string both brittle).
+    const augmented = chatMsgs.map((m, i) => (
+      i === 0 && systemMsg
+        ? { ...m, content: `${systemMsg}\n\n${m.content}` }
+        : m
+    ));
+
     const model = gemini.getGenerativeModel({
       model: 'gemini-2.5-flash',
       generationConfig: { temperature, maxOutputTokens: 1024 }
     });
 
-    const systemMsg  = messages.find(m => m.role === 'system')?.content || '';
-    const chatMsgs   = messages.filter(m => m.role !== 'system');
-
-    const history    = chatMsgs.slice(0, -1).map(m => ({
+    const history = augmented.slice(0, -1).map(m => ({
       role:  m.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: m.content }]
     }));
 
-    const chat = model.startChat({
-      history:           this.cleanGeminiHistory(history),
-      systemInstruction: systemMsg || undefined
-    });
-
-    const lastMsg = chatMsgs[chatMsgs.length - 1];
+    const chat    = model.startChat({ history: this.cleanGeminiHistory(history) });
+    const lastMsg = augmented[augmented.length - 1];
     const result  = await chat.sendMessage(lastMsg.content);
     return result.response.text();
   }
