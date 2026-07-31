@@ -2,7 +2,7 @@ import { config } from 'dotenv';
 config();
 
 import { db } from '../../config/firebase.js';
-import { llm } from './llmAdapter.js';
+import { llm, isTokenBudgetLow } from './llmAdapter.js';
 import { logger } from '../../utils/logger.js';
 import { parseDate, formatDate } from './dateParser.js';
 import { conversationMemory } from '../memory/conversationMemory.js';
@@ -40,80 +40,28 @@ const USER_TIMEZONE = process.env.USER_TIMEZONE || 'Asia/Kolkata';
 const DASHBOARD_URL = process.env.DASHBOARD_URL || '';
 
 // ── Conversation prompt — free-form mode (no JSON, pure personality) ───────
-const CONVERSATION_PROMPT = `You are ${USER_NAME}'s personal chief-of-staff and trusted advisor. You know each other well.
+const CONVERSATION_PROMPT = `You are ${USER_NAME}'s personal chief-of-staff and close confidant. Direct, witty, occasionally dry. You pick sides ("go with A because…"), match energy, and understand Indian context. No filler ("How can I assist?", "Great question!", "Feel free to ask.").
 
-YOUR PERSONALITY:
-- Sharp, witty, and direct. You don't waste words but you're never cold.
-- You have genuine opinions — when asked "should I do X or Y?", you pick a side and explain why. Never "it depends."
-- You use humor naturally — dry observations, not forced jokes. Avoid excessive emojis.
-- You understand Indian context: culture, food, festivals, business dynamics.
-- You match the user's energy: casual when they're casual, grounded when they're serious.
-- You reference context from earlier in the conversation naturally.
-
-HOW TO RESPOND:
-- Short messages ("hi", "what's up") → 1-2 sentences max. No data dumps on greetings.
-- Questions → direct answer first, context if helpful. Lead with the answer, not the preamble.
-- "Help me think through..." or "what should I do?" → multi-paragraph, show your reasoning, be specific.
-- Advice → opinionated. "I'd go with Option A because..." not "both have pros and cons."
-- If you don't know something → say so in one sentence, suggest where to check.
-- NEVER say "How can I assist you?", "Is there anything else?", "Feel free to ask."
-- NEVER start with "Great question!" or "That's interesting!" — just answer.
-
-MOOD AWARENESS:
-- Frustration or stress → acknowledge briefly before helping. Don't be chirpy.
-- Excitement ("I got it!", "guess what") → match their energy.
-- Venting → listen first. "That sounds rough" can be the whole answer.
-- Late night (after 11 PM) → warmer, more casual.
-- Early morning (before 7 AM) → brief and energetic.
-
-EXAMPLES OF GOOD RESPONSES:
-- "hi" → "Evening. Nothing urgent — clear slate tonight." (not a task list)
-- "I'm stressed about placements" → ask what the specific worry is; separate what they can control from what they can't
-- "should I take consulting or strategy elective?" → pick one and give a real reason
-- "explain blockchain" → clear with one good analogy, 3-4 sentences
-- "tell me a joke" → actually try
+Short messages → 1-2 sentences. Questions → answer first. Advice → opinionated. Stress/venting → acknowledge before helping, don't be chirpy. Late night → warmer. Early morning → brief.
 
 RESPOND AS PLAIN TEXT. No JSON. No bullet lists unless the content genuinely needs structure.`;
 
 // ── Action prompt core — structured mode (JSON required) ───────────────────
-const ACTION_PROMPT_CORE = `You are ${USER_NAME}'s chief-of-staff. Process this request and respond with a JSON object.
+const ACTION_PROMPT_CORE = `You are ${USER_NAME}'s chief-of-staff (timezone: ${USER_TIMEZONE}). Respond with valid JSON only: {"reply":"...","actions":[...]}
 
-ABOUT THE USER:
-- Name: ${USER_NAME}
-- Timezone: ${USER_TIMEZONE}
-- Personal context from LONG-TERM MEMORY below.
-
-RESPONSE FORMAT (always valid JSON, nothing else): {"reply":"...","actions":[...]}
-
-REPLY QUALITY:
-- Confirm what you did in ONE natural sentence. "Task added: submit report by Friday." Not "I have successfully created a task titled 'submit report' with a deadline of Friday."
-- If there's a relevant implication, add ONE more sentence. "That's your 3rd task due Friday — busy end of week."
-- Sound like a person confirming, not a system announcing. Never exceed 2-3 sentences for confirmations.
-- For questions that don't need actions, answer directly in the reply field with no actions array.
+REPLY: One natural sentence confirming the action. Two sentences max — add a brief implication only if genuinely useful. No filler, no announcements.${DASHBOARD_URL ? `\n"my dashboard" → ${DASHBOARD_URL}` : ''}
 
 RULES:
-- Answer general knowledge freely. For live data → say briefly and suggest where to check.
-- BUDGET: mention only when user talks about money. Don't nag.
-- OBSERVATIONS block: surface only if directly relevant to what user just asked.
-- Habits are recurring behaviours — never create_task for a habit.
-- CRITICAL: "remove/delete/clear all habits" → {"type":"delete_all_habits"} — NO match field. NEVER delete_habit with match="all".
-- CRITICAL: "remove/delete/clear all expenses" → {"type":"delete_all_expenses"} — NO match field. NEVER delete_expense with match="all".
-- Time-range deletes: today's expenses → period="today"; this week → "this_week"; this month → "this_month".
-- Task time-deletes: completed tasks → period="completed"; today's tasks → "today"; this week → "this_week".
-- "save X to my phone" → save_to_phone (+ create_contact if not already saved in Firestore).
-- send_whatsapp reply confirms the draft — system appends the link. No raw URLs in reply.${DASHBOARD_URL ? `\n- "my dashboard/website" → ${DASHBOARD_URL}` : ''}
-- FOLLOW-UP context present → user answered your question — complete the goal now, don't ask again.
-- WIN_CAPTURE_PENDING: user answered "what are you proud of today?" → emit store_win with their exact words.
-- When user mentions an accomplishment naturally ("finished X", "proud of Y") → emit store_win.
-- QUICK CAPTURE (do NOT ask for clarification on obvious fragments):
-  "[number] [item]" → expense (e.g. "200 chai" → ₹200 food/chai)
-  "[habit] done/complete" → complete_habit
-  "mtg [time]" → calendar event today at that time
-  "[name] bday [date]" → store_memory
-  Abbreviations: tmrw=tomorrow, mtg=meeting, assgn=assignment`;
+- Habits are recurring — never create_task for a habit.
+- "delete all habits/expenses" → delete_all_* type, NO match field.
+- Expense period: "today|this_week|this_month" | Task period: "today|this_week|completed"
+- send_whatsapp: confirm draft in reply, no raw URL (system appends link).
+- WIN_CAPTURE_PENDING → store_win with exact words. Also emit store_win for natural wins ("finished X", "proud of Y").
+- FOLLOW-UP present → complete the goal, don't ask again.
+- QUICK CAPTURE: "200 chai"→expense | "gym done"→complete_habit | "mtg 3pm"→calendar event | "Riya bday May5"→store_memory`;
 
-// Action schemas — only appended when message likely needs an action (~400 tokens)
-const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array — use exact field names):
+// Action schemas — only appended when message likely needs an action
+const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array):
 {"type":"create_task","title":"...","deadline_text":"raw date","recurrence_text":"raw recurrence","priority":"high|medium|low"}
 {"type":"create_expense","amount":0,"category":"food|travel|shopping|education|health|other","description":"..."}
 {"type":"delete_expense","match":"keyword"} | {"type":"delete_all_expenses"} | {"type":"delete_expenses_timerange","period":"today|this_week|this_month"}
@@ -121,28 +69,16 @@ const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array — use exact field nam
 {"type":"complete_task","match":"keywords"} | {"type":"delete_task","match":"keywords"} | {"type":"delete_tasks_timerange","period":"today|this_week|completed"}
 {"type":"create_habit","name":"...","recurrence":"daily|weekly|weekdays|..."} | {"type":"complete_habit","match":"keyword"} | {"type":"delete_habit","match":"name"} | {"type":"delete_all_habits"}
 {"type":"create_calendar_event","title":"...","date":"raw","end_date":"raw","location":"...","description":"..."}
-{"type":"create_contact","name":"...","phone":"...","relationship":"..."}
-{"type":"save_to_phone","name":"...","phone":"...","email":"..."} — sends .vcf file; combine with create_contact to also save to Firestore
-{"type":"send_whatsapp","contact_name":"...","message":"..."} — match name to KNOWN CONTACTS in context
-{"type":"phone_call","contact_name":"..."} — "call [name]". Generates a tel: link. Contact must be in KNOWN CONTACTS.
-{"type":"send_sms","contact_name":"...","message":"..."} — "text [name] [message]". Generates sms: link with pre-filled text.
-{"type":"navigate","destination":"..."} — "navigate to [place]", "directions to [place]". Generates Google Maps link.
-{"type":"play_music","query":"..."} — "play [song/artist/genre]". Generates YouTube Music search link.
-{"type":"web_open","url_or_query":"..."} — "open [app]", "open [site]". Known apps open directly; others fall back to Google search.
-{"type":"set_timer","minutes":5,"label":"..."} — "set a [N] minute timer". Generates a Google timer link.
-{"type":"web_search","query":"3-6 word query"} — use for: news, live prices/scores, current events, facts you're uncertain of. NOT for: general concepts, personal data already in context. Placeholder reply: "Let me check that for you." Then cite sources.
-{"type":"store_win","text":"..."} — user shared something they're proud of; store verbatim.
+{"type":"create_contact","name":"...","phone":"...","relationship":"..."} | {"type":"save_to_phone","name":"...","phone":"...","email":"..."}
+{"type":"send_whatsapp","contact_name":"...","message":"..."} — name must match KNOWN CONTACTS
+{"type":"phone_call","contact_name":"..."} | {"type":"send_sms","contact_name":"...","message":"..."}
+{"type":"navigate","destination":"..."} | {"type":"play_music","query":"..."} | {"type":"web_open","url_or_query":"..."} | {"type":"set_timer","minutes":5,"label":"..."}
+{"type":"web_search","query":"3-6 word query"} — news, live prices, facts you're uncertain of; placeholder reply: "Let me check."
+{"type":"store_win","text":"..."} — accomplishment shared by user
 {"type":"create_list","name":"..."} | {"type":"add_to_list","list_name":"...","item":"..."} | {"type":"remove_from_list","list_name":"...","item":"..."} | {"type":"show_list","list_name":"..."} | {"type":"share_list","list_name":"...","share_with":"telegram_user_id"}
 {"type":"ask_followup","waiting_for":"label","partial":{}}
-
-PHONE ACTION EXAMPLES:
-"call Mom" → {"type":"phone_call","contact_name":"Mom"}
-"text dad I'll be late" → {"type":"send_sms","contact_name":"dad","message":"I'll be late"}
-"navigate to airport" → {"type":"navigate","destination":"the airport"}
-"play some lo-fi" → {"type":"play_music","query":"lo-fi hip hop"}
-"open Swiggy" → {"type":"web_open","url_or_query":"swiggy"}
-"set a 10 minute timer" → {"type":"set_timer","minutes":10,"label":"timer"}
-If contact not found for call/SMS, say "I don't have [name]'s number. Save it with 'save [name]'s number [number]'"`;
+If contact not found for call/SMS: "I don't have [name]'s number — save it with 'save [name]'s number [number]'"
+Examples: "call Mom"→phone_call | "text dad I'll be late"→send_sms | "navigate to airport"→navigate | "play lo-fi"→play_music | "open Swiggy"→web_open | "10 min timer"→set_timer`;
 
 // ── App shortcut map ────────────────────────────────────────────────────────
 const APP_URLS = {
@@ -239,7 +175,7 @@ export class ConversationEngine {
     const todayStr = now.toISOString().slice(0, 10);
 
     // ── Determine which optional context sections are needed ───────────────
-    const wantsContacts = /contact|whatsapp|message\s+\w|phone|number|vcf|send.*to|\bcall\s+\w|text\s+\w|\bsms\b/i.test(message);
+    const wantsContacts = /contact|whatsapp|message\s+\w|phone|number|vcf|send.*to|\bcall\b|text\s+\w|\bsms\b|\btell\s+\w/i.test(message);
     const wantsJournal  = /journal|mood|feeling|reflect/i.test(message);
     const wantsDoc      = /pdf|document|summarize|paper|article/i.test(message);
 
@@ -294,12 +230,13 @@ export class ConversationEngine {
     const memBlk = this.selectMemories(memories, message)
       .map(m => `- ${m.key || m.category}: ${m.value}`).join('\n') || '(none)';
 
-    // ── Proactive observations ─────────────────────────────────────────────
-    const observations = this.buildObservations(tasks, habits, expenseSummary, budgets, todayStr);
+    // ── Proactive observations (cap at 5 to control token use) ────────────
+    const observations = this.buildObservations(tasks, habits, expenseSummary, budgets, todayStr).slice(0, 5);
 
-    // ── Contacts (only when relevant) ──────────────────────────────────────
+    // ── Contacts — names only for the LLM (phone lookup done in executeActions) ─
     const contactBlock = wantsContacts && contacts.length
-      ? 'KNOWN CONTACTS:\n' + contacts.map(c => `- ${c.name}: ${c.phone || '(no phone)'}${c.relationship ? ` [${c.relationship}]` : ''}`).join('\n')
+      ? 'KNOWN CONTACTS: ' + contacts.slice(0, 10).map(c => c.name).join(', ')
+        + (contacts.length > 10 ? ` (+${contacts.length - 10} more)` : '')
       : null;
 
     // ── Session ────────────────────────────────────────────────────────────
@@ -325,7 +262,8 @@ export class ConversationEngine {
     ].filter(Boolean).join('\n\n');
 
     // ── Assemble action system prompt — always includes schemas ───────────
-    const systemPrompt = ACTION_PROMPT_CORE + '\n\n' + ACTION_SCHEMAS;
+    const budgetWarning = isTokenBudgetLow() ? '\nTOKEN BUDGET LOW: Keep reply under 20 words.' : '';
+    const systemPrompt = ACTION_PROMPT_CORE + '\n\n' + ACTION_SCHEMAS + budgetWarning;
 
     const messages = [
       { role: 'system', content: systemPrompt },
@@ -630,23 +568,32 @@ export class ConversationEngine {
             break;
           }
           case 'phone_call': {
-            const allContacts = [...justCreatedContacts, ...currentContacts];
-            const c = contactService.matchContact(allContacts, action.contact_name);
-            if (c?.phone) {
-              const dialCode = c.phone.length === 10 ? `+91${c.phone}` : `+${c.phone}`;
-              this._quickAction = { label: `📞 Call ${c.name}`, url: `tel:${dialCode}` };
+            let callContacts = [...justCreatedContacts, ...currentContacts];
+            let callContact = contactService.matchContact(callContacts, action.contact_name);
+            if (!callContact) {
+              // Fallback: contacts weren't pre-loaded (wantsContacts regex missed) — fetch live
+              const liveContacts = await contactService.getUserContacts(userId);
+              callContact = contactService.matchContact(liveContacts, action.contact_name);
+            }
+            if (callContact?.phone) {
+              const dialCode = callContact.phone.length === 10 ? `+91${callContact.phone}` : `+${callContact.phone}`;
+              this._quickAction = { label: `📞 Call ${callContact.name}`, url: `tel:${dialCode}` };
             } else {
               logger.warn('phone_call: contact not found', { contact_name: action.contact_name });
             }
             break;
           }
           case 'send_sms': {
-            const allContacts = [...justCreatedContacts, ...currentContacts];
-            const c = contactService.matchContact(allContacts, action.contact_name);
-            if (c?.phone) {
-              const dialCode = c.phone.length === 10 ? `+91${c.phone}` : `+${c.phone}`;
+            let smsContacts = [...justCreatedContacts, ...currentContacts];
+            let smsContact = contactService.matchContact(smsContacts, action.contact_name);
+            if (!smsContact) {
+              const liveContacts = await contactService.getUserContacts(userId);
+              smsContact = contactService.matchContact(liveContacts, action.contact_name);
+            }
+            if (smsContact?.phone) {
+              const dialCode = smsContact.phone.length === 10 ? `+91${smsContact.phone}` : `+${smsContact.phone}`;
               const body = encodeURIComponent(action.message || '');
-              this._quickAction = { label: `💬 Send SMS to ${c.name}`, url: `sms:${dialCode}?body=${body}` };
+              this._quickAction = { label: `💬 SMS ${smsContact.name}`, url: `sms:${dialCode}?body=${body}` };
             } else {
               logger.warn('send_sms: contact not found', { contact_name: action.contact_name });
             }

@@ -2,98 +2,82 @@ import { taskService } from '../tasks/taskService.js';
 import { habitService } from '../habits/habitService.js';
 import { expenseService } from '../expenses/expenseService.js';
 import { winsService } from '../wins/winsService.js';
-import { llm } from '../ai/llmAdapter.js';
 import { telegramService } from '../telegram/telegramService.js';
 import { logger } from '../../utils/logger.js';
-
-const USER_NAME = process.env.USER_NAME || 'User';
 
 export class PlannerService {
   // ── Proactive sends (called by proactiveScheduler) ─────────────────────
 
   async sendMorningBrief(userId, chatId) {
     const today = new Date();
-    const [tasks, habits, expenseSummary, weeklyWins] = await Promise.all([
+    const [tasks, habits, weeklyWins] = await Promise.all([
       taskService.getUserTasks(userId, 'pending'),
       habitService.getUserHabits(userId),
-      expenseService.getMonthlySummary(userId),
       winsService.getWeeklyWinCount(userId).catch(() => 0)
     ]);
 
-    const todayTasks = tasks.filter(t => this.isToday(t.deadline));
-    const overdueTasks = tasks.filter(t => t.deadline && new Date(t.deadline) < today && !this.isToday(t.deadline));
-    const totalSpend = Object.values(expenseSummary).reduce((s, v) => s + v, 0);
+    const overdue   = tasks.filter(t => t.deadline && !this.isToday(t.deadline) && new Date(t.deadline?.toDate ? t.deadline.toDate() : t.deadline) < today);
+    const dueToday  = tasks.filter(t => this.isToday(t.deadline));
 
-    const taskLines = tasks.slice(0, 8)
-      .map(t => `- ${t.title} [${t.priority}] due: ${t.deadline ? new Date(t.deadline).toDateString() : 'none'}`)
-      .join('\n') || 'No pending tasks';
+    let brief = `☀️ *Good morning!*\n\n`;
+    if (dueToday.length)  brief += `📌 *Due today:* ${dueToday.map(t => t.title).join(', ')}\n`;
+    if (overdue.length)   brief += `⚠️ *Overdue:* ${overdue.map(t => t.title).join(', ')}\n`;
+    if (tasks.length)     brief += `📋 ${tasks.length} pending task${tasks.length !== 1 ? 's' : ''} total\n`;
+    if (habits.length)    brief += `🎯 *Habits:* ${habits.map(h => `${h.name}${h.streak ? ` (${h.streak}d)` : ''}`).join(', ')}\n`;
+    if (weeklyWins >= 3)  brief += `🏆 ${weeklyWins} wins this week!\n`;
+    if (!tasks.length && !habits.length) brief += `Clear slate — make today count.\n`;
+    brief += `\nHave a great day!`;
 
-    const habitLines = habits.map(h => `- ${h.name} (streak: ${h.streak})`).join('\n') || 'No habits';
-    const expenseLines = Object.entries(expenseSummary).map(([c, a]) => `${c}: ₹${a}`).join(', ') || '₹0';
-
-    const winsNote = weeklyWins >= 3 ? `\nWeekly wins so far: ${weeklyWins} — mention this to celebrate momentum.` : '';
-
-    const brief = await llm.call(
-      `You are ${USER_NAME}'s personal chief-of-staff. Write a crisp 3–5 sentence morning brief. Be direct and motivating — no filler. Highlight today's most important tasks, any overdue items, habit streaks to keep alive, and spending if notable. End with one punchy line. Use Telegram Markdown (*bold*).`,
-      `Today: ${today.toDateString()}
-Pending tasks (${tasks.length} total, ${todayTasks.length} due today, ${overdueTasks.length} overdue):
-${taskLines}
-
-Habits:
-${habitLines}
-
-Month spend: ${expenseLines} (total ₹${totalSpend.toFixed(0)})${winsNote}`,
-      0.7
-    );
-
-    await telegramService.sendMessage(chatId, `🌅 *Good morning!*\n\n${brief}`);
-    logger.info('Morning brief sent', { userId });
+    await telegramService.sendMessage(chatId, brief);
+    logger.info('Morning brief sent (template)', { userId, taskCount: tasks.length, overdueCount: overdue.length });
   }
 
   async sendEveningReview(userId, chatId) {
     const today = new Date();
     const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
-    const [pendingTasks, completedTasks, habits, expenseSummary] = await Promise.all([
+    const [pendingTasks, completedTasks, habits] = await Promise.all([
       taskService.getUserTasks(userId, 'pending'),
       taskService.getUserTasks(userId, 'completed'),
-      habitService.getUserHabits(userId),
-      expenseService.getMonthlySummary(userId)
+      habitService.getUserHabits(userId)
     ]);
 
     const completedToday = completedTasks.filter(t => {
       const at = t.completedAt?.toDate ? t.completedAt.toDate() : new Date(t.completedAt || 0);
       return at >= startOfDay;
     });
+    const habitsDoneToday = habits.filter(h => this.isHabitDoneToday(h));
 
-    const totalSpend = Object.values(expenseSummary).reduce((s, v) => s + v, 0);
+    let review = `📊 *Evening Review*\n\n`;
+    if (completedToday.length) {
+      review += `✅ *Done today:* ${completedToday.map(t => t.title).join(', ')}\n`;
+    } else {
+      review += `📭 Nothing completed today — tomorrow is a fresh start.\n`;
+    }
+    if (pendingTasks.length) {
+      review += `📋 ${pendingTasks.length} task${pendingTasks.length !== 1 ? 's' : ''} still pending\n`;
+    }
+    if (habits.length) {
+      review += `🎯 Habits: ${habitsDoneToday.length}/${habits.length} done today\n`;
+    }
+    review += `\n*What's one thing you're proud of today?*`;
 
-    const completedLines = completedToday.map(t => `- ✅ ${t.title}`).join('\n') || 'None completed today — tomorrow is a fresh start.';
-    const pendingLines = pendingTasks.slice(0, 5).map(t => `- ${t.title}`).join('\n') || 'All clear!';
-    const habitLines = habits.map(h => `- ${h.name}: ${h.streak} day streak`).join('\n') || 'No habits tracked';
-
-    const review = await llm.call(
-      `You are ${USER_NAME}'s personal chief-of-staff. Write a crisp 4–6 sentence evening review. Celebrate wins, acknowledge pending tasks without guilt, mention today's habits. End with exactly this line: "What's one thing you're proud of today?" Use Telegram Markdown (*bold*).`,
-      `Completed today:
-${completedLines}
-
-Still pending (${pendingTasks.length}):
-${pendingLines}
-
-Habits:
-${habitLines}
-
-Monthly spending: ₹${totalSpend.toFixed(0)}`,
-      0.7
-    );
-
-    await telegramService.sendMessage(chatId, `📊 *Evening Review*\n\n${review}`);
+    await telegramService.sendMessage(chatId, review);
 
     // Set win capture window — next message within 10 minutes gets stored as a win
     await winsService.setWinPending(userId).catch(err =>
       logger.error('setWinPending failed', { error: err.message })
     );
-    logger.info('Evening review sent', { userId });
+    logger.info('Evening review sent (template)', { userId, completedToday: completedToday.length });
+  }
+
+  isHabitDoneToday(h) {
+    if (!h.lastCompleted) return false;
+    const last = h.lastCompleted?.toDate ? h.lastCompleted.toDate() : new Date(h.lastCompleted);
+    const today = new Date();
+    return last.getFullYear() === today.getFullYear() &&
+           last.getMonth()    === today.getMonth()    &&
+           last.getDate()     === today.getDate();
   }
 
   // ── Legacy methods (used by commandHandler /daily and /evening) ─────────

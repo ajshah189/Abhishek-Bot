@@ -9,7 +9,7 @@ import { sharedListService } from '../lists/sharedListService.js';
 import { logger } from '../../utils/logger.js';
 import { telegramService } from './telegramService.js';
 import { db } from '../../config/firebase.js';
-import { llm } from '../ai/llmAdapter.js';
+import { llm, getTokenStats } from '../ai/llmAdapter.js';
 
 export class CommandHandler {
   async handle(userId, chatId, command, args) {
@@ -92,6 +92,9 @@ export class CommandHandler {
 
         case 'settings':
           return this.handleSettings();
+
+        case 'usage':
+          return this.handleUsage();
 
         default:
           return `Unknown command: ${command}. Type /help for available commands.`;
@@ -275,6 +278,7 @@ Contacts
 Utilities
 /clear - Reset conversation memory
 /settings - Manage settings
+/usage - Token usage today (API budget)
 
 Quick capture (no slash needed):
   "200 chai" → log expense
@@ -562,6 +566,23 @@ Evening Review: 09:00 PM
 
 🌍 Timezone: Asia/Kolkata
 🗣️ Language: English`;
+  }
+
+  handleUsage() {
+    const s = getTokenStats();
+    const pct = Math.round((s.used / s.limit) * 100);
+    const bar = '█'.repeat(Math.round(pct / 10)) + '░'.repeat(10 - Math.round(pct / 10));
+    const status = s.remaining < 10000 ? '⚠️ Low' : s.remaining < 30000 ? '🟡 Moderate' : '🟢 Good';
+    return `📊 *Token Usage Today*
+
+${bar} ${pct}%
+Used: *${s.used.toLocaleString()}* / ${s.limit.toLocaleString()}
+Remaining: *${s.remaining.toLocaleString()}* tokens ${status}
+
+📈 *Stats*
+API calls today: ${s.calls}
+Avg tokens/call: ${s.avgPerCall}
+Est. calls left: ${s.estCallsLeft}`;
   }
 }
 
