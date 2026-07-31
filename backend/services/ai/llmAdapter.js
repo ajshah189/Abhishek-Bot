@@ -9,6 +9,28 @@ const gemini = process.env.GEMINI_API_KEY
   ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
   : null;
 
+// ── Gemini RPM rate limiter (free tier: 5 req/min) ────────────────────────────
+const geminiCallTimes = [];
+const GEMINI_RPM = 5;
+
+async function waitForGeminiSlot() {
+  const now = Date.now();
+  while (geminiCallTimes.length && geminiCallTimes[0] < now - 60000) {
+    geminiCallTimes.shift();
+  }
+
+  if (geminiCallTimes.length >= GEMINI_RPM) {
+    const waitMs = 60000 - (now - geminiCallTimes[0]) + 100;
+    if (waitMs > 5000) {
+      throw new Error(`Gemini RPM limit — falling to Groq (would wait ${waitMs}ms)`);
+    }
+    logger.info('Gemini RPM limit, waiting', { waitMs });
+    await new Promise(r => setTimeout(r, waitMs));
+  }
+
+  geminiCallTimes.push(Date.now());
+}
+
 // ── In-memory daily call counter (resets at midnight) ─────────────────────────
 let dailyCallCount = 0;
 let lastResetDate  = new Date().getDate();
@@ -66,6 +88,8 @@ export class LLMAdapter {
   async callGemini(messages, temperature) {
     if (!gemini) throw new Error('Gemini not configured');
 
+    await waitForGeminiSlot(); // throws immediately if wait > 5s → Groq fallback
+
     const model = gemini.getGenerativeModel({
       model: 'gemini-2.5-flash',
       generationConfig: { temperature, maxOutputTokens: 1024 }
@@ -93,8 +117,15 @@ export class LLMAdapter {
     const cleanHistory = this.cleanGeminiHistory(history);
     const chat         = model.startChat({ history: cleanHistory });
     const lastMessage  = chatMessages[chatMessages.length - 1];
-    const result       = await chat.sendMessage(lastMessage.content);
-    return result.response.text();
+    try {
+      const result = await chat.sendMessage(lastMessage.content);
+      return result.response.text();
+    } catch (error) {
+      if (error.status === 429 || error.message?.includes('RESOURCE_EXHAUSTED')) {
+        logger.warn('Gemini rate limited, falling to Groq', { error: error.message });
+      }
+      throw error; // re-throw so provider loop falls through to Groq
+    }
   }
 
   cleanGeminiHistory(history) {
