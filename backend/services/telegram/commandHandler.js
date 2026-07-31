@@ -9,7 +9,7 @@ import { sharedListService } from '../lists/sharedListService.js';
 import { logger } from '../../utils/logger.js';
 import { telegramService } from './telegramService.js';
 import { db } from '../../config/firebase.js';
-import { llm, getTokenStats } from '../ai/llmAdapter.js';
+import { llm, getTokenUsage } from '../ai/llmAdapter.js';
 
 export class CommandHandler {
   async handle(userId, chatId, command, args) {
@@ -569,20 +569,14 @@ Evening Review: 09:00 PM
   }
 
   handleUsage() {
-    const s = getTokenStats();
-    const pct = Math.round((s.used / s.limit) * 100);
-    const bar = '█'.repeat(Math.round(pct / 10)) + '░'.repeat(10 - Math.round(pct / 10));
-    const status = s.remaining < 10000 ? '⚠️ Low' : s.remaining < 30000 ? '🟡 Moderate' : '🟢 Good';
-    return `📊 *Token Usage Today*
+    const usage = getTokenUsage();
+    return `📊 *LLM Usage*
 
-${bar} ${pct}%
-Used: *${s.used.toLocaleString()}* / ${s.limit.toLocaleString()}
-Remaining: *${s.remaining.toLocaleString()}* tokens ${status}
+Primary: Gemini 2.5 Flash (1,500 req/day free)
+Fallback: Groq llama-3.3-70b (100K tokens/day free)
 
-📈 *Stats*
-API calls today: ${s.calls}
-Avg tokens/call: ${s.avgPerCall}
-Est. calls left: ${s.estCallsLeft}`;
+Calls today: *${usage.used}*
+Status: ✅ Healthy`;
   }
 }
 

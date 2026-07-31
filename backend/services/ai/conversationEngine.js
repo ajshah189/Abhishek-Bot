@@ -3,6 +3,7 @@ config();
 
 import { db } from '../../config/firebase.js';
 import { llm, isTokenBudgetLow } from './llmAdapter.js';
+import { contextCache } from './contextCache.js';
 import { logger } from '../../utils/logger.js';
 import { parseDate, formatDate } from './dateParser.js';
 import { conversationMemory } from '../memory/conversationMemory.js';
@@ -112,6 +113,9 @@ const ROUTINE_TRIGGERS = {
   'weekly review': ['tasks_week', 'expenses_week', 'habits_week']
 };
 
+// ── Deterministic search patterns (skip classify → LLM, go straight to search) ─
+const SEARCH_PATTERNS = /\b(news|search|latest|price of|weather in|who won|current|stock|score|what happened|trending|release date|review of)\b/i;
+
 // ── Message classification ──────────────────────────────────────────────────
 
 function classifyMessage(msg) {
@@ -168,11 +172,40 @@ export class ConversationEngine {
   // ── Main entry point ─────────────────────────────────────────────────────
 
   async process(userId, chatId, message) {
+    if (SEARCH_PATTERNS.test(message)) {
+      return await this.handleSearchDirect(userId, chatId, message);
+    }
     const mode = classifyMessage(message);
     if (mode === 'conversation') {
       return await this.handleConversation(userId, chatId, message);
     }
     return await this.handleAction(userId, chatId, message);
+  }
+
+  // ── One-call web search — bypasses the classify LLM call entirely ─────────
+  async handleSearchDirect(userId, chatId, message) {
+    try {
+      const { webSearchService } = await import('../search/webSearchService.js');
+      const results = await webSearchService.search(message, 5);
+
+      if (!results || results.length === 0) {
+        return await this.handleConversation(userId, chatId, message);
+      }
+
+      const formatted = webSearchService.formatForLLM(results);
+      const reply = await llm.call(
+        `You are a helpful assistant. Answer the question using the search results. Be concise (2-4 sentences). Cite the source URL if relevant. No JSON — just plain text.`,
+        `Question: ${message}\n\nSearch results:\n${formatted}`,
+        0.3
+      );
+
+      await conversationMemory.addTurn(userId, 'user', message);
+      await conversationMemory.addTurn(userId, 'assistant', reply);
+      return { reply, quickAction: null, whatsappLink: null };
+    } catch (error) {
+      logger.error('Direct search failed', { error: error.message });
+      return await this.handleConversation(userId, chatId, message);
+    }
   }
 
   // ── Action mode — JSON format, full context, structured responses ─────────
@@ -187,18 +220,27 @@ export class ConversationEngine {
     const wantsJournal  = /journal|mood|feeling|reflect/i.test(message);
     const wantsDoc      = /pdf|document|summarize|paper|article/i.test(message);
 
-    // ── Parallel fetch — skip optional sections when not needed ────────────
-    const [recentTurns, memories, tasks, habits, pendingSession,
-           calendarContext, expenseSummary, budgets, contacts, journalLines, activeDoc,
-           winPending] = await Promise.all([
+    // ── Context cache: serve heavy Firestore reads from memory (30s TTL) ────
+    const cached = contextCache.get(userId);
+    let tasks, habits, calendarContext, expenseSummary, budgets;
+    if (cached) {
+      ({ tasks, habits, calendarContext, expenseSummary, budgets } = cached);
+    } else {
+      [tasks, habits, calendarContext, expenseSummary, budgets] = await Promise.all([
+        taskService.getUserTasks(userId, 'pending'),
+        habitService.getUserHabits(userId).catch(() => []),
+        this.getCalendarContext(userId),
+        expenseService.getMonthlySummary(userId),
+        this.getBudgets(userId)
+      ]);
+      contextCache.set(userId, { tasks, habits, calendarContext, expenseSummary, budgets });
+    }
+
+    // ── Always-fresh fetches (conversation state, win flag, conditionals) ───
+    const [recentTurns, memories, pendingSession, contacts, journalLines, activeDoc, winPending] = await Promise.all([
       conversationMemory.getRecentTurns(userId),
       memoryService.getUserMemories(userId),
-      taskService.getUserTasks(userId, 'pending'),
-      habitService.getUserHabits(userId).catch(() => []),
       this.getSession(userId),
-      this.getCalendarContext(userId),
-      expenseService.getMonthlySummary(userId),
-      this.getBudgets(userId),
       wantsContacts ? contactService.getUserContacts(userId).catch(() => []) : Promise.resolve([]),
       wantsJournal  ? this.getJournalLines(userId) : Promise.resolve(null),
       wantsDoc      ? this.getActiveDocContext(userId) : Promise.resolve(null),
@@ -404,6 +446,7 @@ export class ConversationEngine {
               priority: action.priority || 'medium',
               recurrence_text: action.recurrence_text || ''
             });
+            contextCache.invalidate(userId);
             break;
           }
           case 'create_habit': {
@@ -411,6 +454,7 @@ export class ConversationEngine {
               title: action.name,
               recurrence_text: action.recurrence || 'daily'
             });
+            contextCache.invalidate(userId);
             break;
           }
           case 'complete_habit': {
@@ -418,6 +462,7 @@ export class ConversationEngine {
             const h = habitService.matchHabit(liveHabits, action.match);
             if (h) await habitService.markComplete(h._docId || h.id);
             else logger.warn('complete_habit: no match', { match: action.match });
+            contextCache.invalidate(userId);
             break;
           }
           case 'delete_habit': {
@@ -425,6 +470,7 @@ export class ConversationEngine {
             const h = habitService.matchHabit(liveHabits, action.match);
             if (h) await habitService.delete(h._docId || h.id);
             else logger.warn('delete_habit: no match', { match: action.match });
+            contextCache.invalidate(userId);
             break;
           }
           case 'delete_all_habits': {
@@ -433,6 +479,7 @@ export class ConversationEngine {
               await Promise.all(liveHabits.map(h => habitService.delete(h._docId || h.id)));
               logger.info('All habits deleted', { userId, count: liveHabits.length });
             }
+            contextCache.invalidate(userId);
             break;
           }
           case 'create_expense': {
@@ -443,17 +490,20 @@ export class ConversationEngine {
               description: action.description || ''
             });
             logger.info('create_expense saved', { userId, amount: action.amount, category: action.category });
+            contextCache.invalidate(userId);
             break;
           }
           case 'delete_all_expenses': {
             const count = await expenseService.deleteAll(userId);
             logger.info('delete_all_expenses completed', { userId, count });
+            contextCache.invalidate(userId);
             break;
           }
           case 'delete_expense': {
             const deleted = await expenseService.deleteByKeyword(userId, action.match || '');
             if (deleted === 0) logger.warn('delete_expense: no match found', { match: action.match });
             else logger.info('delete_expense completed', { userId, match: action.match, count: deleted });
+            contextCache.invalidate(userId);
             break;
           }
           case 'delete_expenses_timerange': {
@@ -466,6 +516,7 @@ export class ConversationEngine {
               default: logger.warn('delete_expenses_timerange: unknown period', { period: action.period });
             }
             logger.info('delete_expenses_timerange completed', { userId, period: action.period, count });
+            contextCache.invalidate(userId);
             break;
           }
           case 'delete_tasks_timerange': {
@@ -477,6 +528,7 @@ export class ConversationEngine {
               default: logger.warn('delete_tasks_timerange: unknown period', { period: action.period });
             }
             logger.info('delete_tasks_timerange completed', { userId, period: action.period, count });
+            contextCache.invalidate(userId);
             break;
           }
           case 'create_contact': {
@@ -539,11 +591,13 @@ export class ConversationEngine {
           case 'complete_task': {
             const t = this.matchTask(currentTasks, action.match);
             if (t) await taskService.updateStatus(t.id, 'completed');
+            contextCache.invalidate(userId);
             break;
           }
           case 'delete_task': {
             const t = this.matchTask(currentTasks, action.match);
             if (t) await taskService.delete(t.id);
+            contextCache.invalidate(userId);
             break;
           }
           case 'ask_followup': {

@@ -1,45 +1,33 @@
 import { config } from 'dotenv';
 config();
 
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import groq from '../../config/groq.js';
 import { logger } from '../../utils/logger.js';
 
-const GROQ_MODEL = 'llama-3.3-70b-versatile';
-const DAILY_TOKEN_LIMIT = 100000;
+const gemini = process.env.GEMINI_API_KEY
+  ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
+  : null;
 
-// ── In-memory daily counters (reset at midnight) ──────────────────────────────
-let dailyTokensUsed = 0;
-let dailyCallCount  = 0;
-let lastResetDate   = new Date().toDateString();
+// ── In-memory daily call counter (resets at midnight) ─────────────────────────
+let dailyCallCount = 0;
+let lastResetDate  = new Date().getDate();
 
 function resetIfNewDay() {
-  const today = new Date().toDateString();
+  const today = new Date().getDate();
   if (today !== lastResetDate) {
-    logger.info('Daily token counter reset', { date: today, previousUsed: dailyTokensUsed, previousCalls: dailyCallCount });
-    dailyTokensUsed = 0;
-    dailyCallCount  = 0;
-    lastResetDate   = today;
+    dailyCallCount = 0;
+    lastResetDate  = today;
   }
 }
 
-export function getTokenStats() {
+export function getTokenUsage() {
   resetIfNewDay();
-  const remaining  = Math.max(0, DAILY_TOKEN_LIMIT - dailyTokensUsed);
-  const avgPerCall = dailyCallCount > 0 ? Math.round(dailyTokensUsed / dailyCallCount) : 0;
-  const estLeft    = avgPerCall > 0 ? Math.floor(remaining / avgPerCall) : '∞';
-  return {
-    used:        dailyTokensUsed,
-    remaining,
-    limit:       DAILY_TOKEN_LIMIT,
-    calls:       dailyCallCount,
-    avgPerCall,
-    estCallsLeft: estLeft
-  };
+  return { used: dailyCallCount, limit: 'unlimited (Gemini primary)' };
 }
 
 export function isTokenBudgetLow() {
-  resetIfNewDay();
-  return (DAILY_TOKEN_LIMIT - dailyTokensUsed) < 10000;
+  return false; // Gemini has 1,500 req/day — effectively unlimited for single-user use
 }
 
 export class LLMAdapter {
@@ -47,42 +35,88 @@ export class LLMAdapter {
     return this.chat(
       [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage }
+        { role: 'user',   content: userMessage  }
       ],
       temperature
     );
   }
 
   async chat(messages, temperature = 0.7) {
-    resetIfNewDay();
-    try {
-      const completion = await groq.chat.completions.create({
-        model: GROQ_MODEL,
-        messages,
-        temperature,
-        max_tokens: 1024
-      });
+    const providers = [
+      { name: 'gemini', fn: () => this.callGemini(messages, temperature) },
+      { name: 'groq',   fn: () => this.callGroq(messages, temperature)   }
+    ];
 
-      const usage = completion.usage;
-      if (usage) {
-        const tokens = (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
-        dailyTokensUsed += tokens;
+    for (const provider of providers) {
+      try {
+        const result = await provider.fn();
+        resetIfNewDay();
         dailyCallCount++;
-        if (dailyTokensUsed > DAILY_TOKEN_LIMIT * 0.9) {
-          logger.warn('Token budget above 90%', { used: dailyTokensUsed, limit: DAILY_TOKEN_LIMIT, calls: dailyCallCount });
-        }
-        logger.debug('LLM token usage', { prompt: usage.prompt_tokens, completion: usage.completion_tokens, dailyTotal: dailyTokensUsed });
+        logger.info('LLM_OK', { provider: provider.name });
+        return result;
+      } catch (error) {
+        logger.warn(`${provider.name} failed, trying next`, { error: error.message });
+        continue;
       }
-
-      return completion.choices[0]?.message?.content || '';
-    } catch (error) {
-      if (error.status === 429) {
-        logger.warn('Groq rate limit hit', { error: error.message });
-        return "I'm thinking a bit too fast right now — give me a few seconds and try again.";
-      }
-      logger.error('LLM call failed', { error: error.message });
-      throw error;
     }
+
+    return "I'm having trouble connecting right now. Try again in a moment.";
+  }
+
+  async callGemini(messages, temperature) {
+    if (!gemini) throw new Error('Gemini not configured');
+
+    const model = gemini.getGenerativeModel({
+      model: 'gemini-2.5-flash',
+      generationConfig: { temperature, maxOutputTokens: 1024 }
+    });
+
+    const systemMsg  = messages.find(m => m.role === 'system')?.content || '';
+    const chatMsgs   = messages.filter(m => m.role !== 'system');
+
+    const history    = chatMsgs.slice(0, -1).map(m => ({
+      role:  m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }]
+    }));
+
+    const chat = model.startChat({
+      history:           this.cleanGeminiHistory(history),
+      systemInstruction: systemMsg || undefined
+    });
+
+    const lastMsg = chatMsgs[chatMsgs.length - 1];
+    const result  = await chat.sendMessage(lastMsg.content);
+    return result.response.text();
+  }
+
+  cleanGeminiHistory(history) {
+    if (!history.length) return [];
+
+    const cleaned = [history[0]];
+    for (let i = 1; i < history.length; i++) {
+      if (history[i].role === cleaned[cleaned.length - 1].role) {
+        // Merge consecutive same-role messages (Gemini requires alternating turns)
+        cleaned[cleaned.length - 1].parts[0].text += '\n' + history[i].parts[0].text;
+      } else {
+        cleaned.push(history[i]);
+      }
+    }
+
+    if (cleaned.length && cleaned[0].role === 'model') {
+      cleaned.unshift({ role: 'user', parts: [{ text: '(continuing conversation)' }] });
+    }
+
+    return cleaned;
+  }
+
+  async callGroq(messages, temperature) {
+    const completion = await groq.chat.completions.create({
+      model:      'llama-3.3-70b-versatile',
+      messages,
+      temperature,
+      max_tokens: 1024
+    });
+    return completion.choices[0]?.message?.content || '';
   }
 }
 
