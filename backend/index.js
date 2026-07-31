@@ -140,10 +140,10 @@ app.post('/api/voice', apiCors, requireApiKey, upload.single('audio'), async (re
     if (!transcript) return res.status(422).json({ error: 'Transcription failed or empty' });
 
     const result = await conversationEngine.process(userId, userId, transcript);
-    const { reply, quickAction } = typeof result === 'string'
-      ? { reply: result, quickAction: null }
+    const { reply, quickAction, whatsappLink } = typeof result === 'string'
+      ? { reply: result, quickAction: null, whatsappLink: null }
       : result;
-    res.json({ transcript, reply, quickAction });
+    res.json({ transcript, reply, quickAction, whatsappLink });
   } catch (error) {
     console.error('API_VOICE_ERR:', error.message);
     res.status(500).json({ error: error.message });
@@ -160,10 +160,10 @@ app.post('/api/text', apiCors, requireApiKey, async (req, res) => {
 
     const { conversationEngine } = await import('./services/ai/conversationEngine.js');
     const result = await conversationEngine.process(userId, userId, message);
-    const { reply, quickAction } = typeof result === 'string'
-      ? { reply: result, quickAction: null }
+    const { reply, quickAction, whatsappLink } = typeof result === 'string'
+      ? { reply: result, quickAction: null, whatsappLink: null }
       : result;
-    res.json({ reply, quickAction });
+    res.json({ reply, quickAction, whatsappLink });
   } catch (error) {
     console.error('API_TEXT_ERR:', error.message);
     res.status(500).json({ error: error.message });

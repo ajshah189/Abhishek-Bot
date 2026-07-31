@@ -104,6 +104,14 @@ const APP_URLS = {
   hotstar: 'https://www.hotstar.com'
 };
 
+// ── Routine definitions (zero LLM tokens — pure data assembly) ────────────────
+const ROUTINE_TRIGGERS = {
+  'good morning': ['calendar_today', 'tasks_pending', 'habits_status'],
+  'start work':   ['tasks_due_today', 'calendar_today'],
+  'end of day':   ['tasks_completed_today', 'habits_status', 'expenses_today'],
+  'weekly review': ['tasks_week', 'expenses_week', 'habits_week']
+};
+
 // ── Message classification ──────────────────────────────────────────────────
 
 function classifyMessage(msg) {
@@ -833,9 +841,131 @@ export class ConversationEngine {
     } catch { return null; }
   }
 
+  // ── Routine engine (zero LLM tokens) ────────────────────────────────────────
+
+  async checkRoutine(message, userId) {
+    const msgLower = (message || '').toLowerCase().trim();
+    for (const [trigger, steps] of Object.entries(ROUTINE_TRIGGERS)) {
+      if (msgLower.includes(trigger)) {
+        return await this.executeRoutine(steps, userId);
+      }
+    }
+    return null;
+  }
+
+  async executeRoutine(steps, userId) {
+    const parts = [];
+    const now = new Date();
+    const todayStr = istNow().toISOString().slice(0, 10);
+
+    for (const step of steps) {
+      try {
+        switch (step) {
+          case 'calendar_today': {
+            try {
+              const { googleCalendarService } = await import('../calendar/googleCalendarService.js');
+              const events = await googleCalendarService.listTodayEvents(userId);
+              if (events?.length) {
+                const list = events.map(e => {
+                  const t = new Date(e.start);
+                  const time = isNaN(t) ? e.start : t.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: USER_TIMEZONE });
+                  return `${e.title} at ${time}`;
+                }).join(', ');
+                parts.push(`Calendar: ${list}.`);
+              } else {
+                parts.push('Nothing on your calendar today.');
+              }
+            } catch { parts.push('Calendar not connected.'); }
+            break;
+          }
+          case 'tasks_pending': {
+            const tasks = await taskService.getUserTasks(userId, 'pending');
+            if (tasks.length) {
+              const overdue = tasks.filter(t => t.deadline && istDateStr(t.deadline) < todayStr);
+              const preview = tasks.slice(0, 3).map(t => t.title).join(', ');
+              parts.push(`${tasks.length} pending task${tasks.length !== 1 ? 's' : ''}${overdue.length ? `, ${overdue.length} overdue` : ''}: ${preview}.`);
+            } else {
+              parts.push('No pending tasks — clear slate.');
+            }
+            break;
+          }
+          case 'tasks_due_today': {
+            const tasks = await taskService.getUserTasks(userId, 'pending');
+            const dueToday = tasks.filter(t => t.deadline && istDateStr(t.deadline) === todayStr);
+            parts.push(dueToday.length
+              ? `Due today: ${dueToday.map(t => t.title).join(', ')}.`
+              : 'Nothing due today.');
+            break;
+          }
+          case 'habits_status': {
+            const habits = await habitService.getUserHabits(userId).catch(() => []);
+            if (habits.length) {
+              const done = habits.filter(h => isCompletedToday(h));
+              const preview = habits.slice(0, 3).map(h => `${h.name} (${h.streak || 0}d)`).join(', ');
+              parts.push(`Habits: ${done.length}/${habits.length} done today. ${preview}.`);
+            }
+            break;
+          }
+          case 'tasks_completed_today': {
+            const completed = await taskService.getUserTasks(userId, 'completed');
+            const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const todayDone = completed.filter(t => {
+              const at = t.completedAt?.toDate ? t.completedAt.toDate() : new Date(t.completedAt || 0);
+              return at >= startOfDay;
+            });
+            parts.push(todayDone.length
+              ? `Completed today: ${todayDone.map(t => t.title).join(', ')}.`
+              : 'Nothing completed today yet.');
+            break;
+          }
+          case 'expenses_today': {
+            const summary = await expenseService.getMonthlySummary(userId);
+            const total = Object.values(summary).reduce((a, b) => a + b, 0);
+            if (total > 0) parts.push(`Month spend so far: ₹${Math.round(total)}.`);
+            break;
+          }
+          case 'tasks_week': {
+            const tasks = await taskService.getUserTasks(userId, 'pending');
+            parts.push(`${tasks.length} task${tasks.length !== 1 ? 's' : ''} pending.`);
+            break;
+          }
+          case 'expenses_week': {
+            const summary = await expenseService.getMonthlySummary(userId);
+            const total = Object.values(summary).reduce((a, b) => a + b, 0);
+            if (total > 0) {
+              const breakdown = Object.entries(summary).map(([c, a]) => `${c} ₹${Math.round(a)}`).join(', ');
+              parts.push(`Month spending: ₹${Math.round(total)} — ${breakdown}.`);
+            }
+            break;
+          }
+          case 'habits_week': {
+            const habits = await habitService.getUserHabits(userId).catch(() => []);
+            if (habits.length) {
+              const top = [...habits].sort((a, b) => (b.streak || 0) - (a.streak || 0))[0];
+              parts.push(`Best streak: ${top.name} at ${top.streak || 0} days.`);
+            }
+            break;
+          }
+        }
+      } catch (err) {
+        logger.error('executeRoutine step failed', { step, error: err.message });
+      }
+    }
+
+    return parts.length ? parts.join(' ') : null;
+  }
+
   // ── Conversation mode — free-form, personality-first responses ────────────
 
   async handleConversation(userId, chatId, message) {
+    // ── Routine check: zero LLM tokens for recognised phrases ────────────────
+    const routineResult = await this.checkRoutine(message, userId);
+    if (routineResult) {
+      await conversationMemory.addTurn(userId, 'user', message);
+      await conversationMemory.addTurn(userId, 'assistant', routineResult);
+      return { reply: routineResult, quickAction: null, whatsappLink: null };
+    }
+
     const [recentTurns, memories, winPending] = await Promise.all([
       conversationMemory.getRecentTurns(userId),
       memoryService.getUserMemories(userId),
