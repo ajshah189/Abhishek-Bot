@@ -172,6 +172,14 @@ export class ConversationEngine {
   // ── Main entry point ─────────────────────────────────────────────────────
 
   async process(userId, chatId, message) {
+    // Deterministic actions — zero LLM tokens
+    const directResult = await this.handleDirectAction(userId, chatId, message);
+    if (directResult) {
+      await conversationMemory.addTurn(userId, 'user', message);
+      await conversationMemory.addTurn(userId, 'assistant', directResult.reply);
+      return directResult;
+    }
+
     if (SEARCH_PATTERNS.test(message)) {
       return await this.handleSearchDirect(userId, chatId, message);
     }
@@ -180,6 +188,69 @@ export class ConversationEngine {
       return await this.handleConversation(userId, chatId, message);
     }
     return await this.handleAction(userId, chatId, message);
+  }
+
+  // ── Deterministic actions — regex-matched, no LLM, no Firestore context ────
+  async handleDirectAction(userId, chatId, message) {
+    const msg = message.toLowerCase().trim();
+
+    // Contacts: load from cache if available, else fetch once
+    let contacts = null;
+    const getContacts = async () => {
+      if (contacts) return contacts;
+      contacts = contextCache.get(userId)?.contacts ||
+        await contactService.getUserContacts(userId).catch(() => []);
+      return contacts;
+    };
+
+    // "call [name]"
+    const callMatch = msg.match(/^call\s+(.+)/i);
+    if (callMatch) {
+      const c = this.matchContact(await getContacts(), callMatch[1].trim());
+      if (c?.phone) {
+        const dialCode = c.phone.length === 10 ? `+91${c.phone}` : `+${c.phone}`;
+        return { reply: `Calling ${c.name}...`, quickAction: { label: `📞 Call ${c.name}`, url: `tel:${dialCode}` }, whatsappLink: null };
+      }
+      return { reply: `I don't have ${callMatch[1].trim()}'s number. Save it with "save ${callMatch[1].trim()}'s number [number]"`, quickAction: null, whatsappLink: null };
+    }
+
+    // "text [name] [message]" or "sms [name] [message]"
+    const smsMatch = msg.match(/^(?:text|sms)\s+(.+?)\s+(?:saying\s+)?(.+)/i);
+    if (smsMatch) {
+      const c = this.matchContact(await getContacts(), smsMatch[1].trim());
+      if (c?.phone) {
+        const dialCode = c.phone.length === 10 ? `+91${c.phone}` : `+${c.phone}`;
+        const body = encodeURIComponent(smsMatch[2].trim());
+        return { reply: `SMS to ${c.name}: "${smsMatch[2].trim()}"`, quickAction: { label: `💬 Send SMS to ${c.name}`, url: `sms:${dialCode}?body=${body}` }, whatsappLink: null };
+      }
+      return { reply: `I don't have ${smsMatch[1].trim()}'s number.`, quickAction: null, whatsappLink: null };
+    }
+
+    // "navigate to [place]" or "directions to [place]" or "go to [place]"
+    const navMatch = msg.match(/^(?:navigate|directions|go)\s+(?:to\s+)?(.+)/i);
+    if (navMatch) {
+      const dest = encodeURIComponent(navMatch[1].trim());
+      return { reply: `Opening directions to ${navMatch[1].trim()}`, quickAction: { label: `🗺️ Navigate to ${navMatch[1].trim()}`, url: `https://www.google.com/maps/dir/?api=1&destination=${dest}` }, whatsappLink: null };
+    }
+
+    // "play [music]"
+    const playMatch = msg.match(/^play\s+(.+)/i);
+    if (playMatch) {
+      const q = encodeURIComponent(playMatch[1].trim());
+      return { reply: `Playing ${playMatch[1].trim()}`, quickAction: { label: `🎵 Play on YouTube Music`, url: `https://music.youtube.com/search?q=${q}` }, whatsappLink: null };
+    }
+
+    // "open [app]"
+    const openMatch = msg.match(/^open\s+(.+)/i);
+    if (openMatch) {
+      const appName = openMatch[1].toLowerCase().trim();
+      const knownUrl = APP_URLS[appName];
+      const url = knownUrl || `https://www.google.com/search?q=${encodeURIComponent(openMatch[1].trim())}`;
+      const label = knownUrl ? `🔗 Open ${openMatch[1].trim()}` : `🔍 Search: ${openMatch[1].trim()}`;
+      return { reply: `Opening ${openMatch[1].trim()}`, quickAction: { label, url }, whatsappLink: null };
+    }
+
+    return null; // not a direct action — fall through to LLM
   }
 
   // ── One-call web search — bypasses the classify LLM call entirely ─────────
