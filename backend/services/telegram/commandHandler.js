@@ -51,6 +51,9 @@ export class CommandHandler {
         case 'cleanhabits':
           return await this.handleCleanHabits(userId);
 
+        case 'cleancontacts':
+          return await this.handleCleanContacts(userId);
+
         case 'today':
           return await this.handleToday(userId);
 
@@ -282,8 +285,9 @@ Search & News
 Contacts
 /contacts - List all saved contacts
 /contacts search [name] - Search contacts
+/cleancontacts - Remove duplicate contacts
 /savecontact [name] - Send contact as .vcf
-/apps - Phone shortcuts (call, SMS, maps, music, timer)
+/apps - Phone shortcuts (call, WhatsApp, maps, music, timer)
 
 Utilities
 /clear - Reset conversation memory
@@ -380,6 +384,26 @@ Quick capture (no slash needed):
     const deleted = await habitService.deduplicateForUser(userId);
     if (deleted === 0) return '✅ No duplicate habits found.';
     return `🧹 Removed ${deleted} duplicate habit${deleted !== 1 ? 's' : ''}. Run /streaks to see the clean list.`;
+  }
+
+  async handleCleanContacts(userId) {
+    const { contactService } = await import('../contacts/contactService.js');
+    const contacts = await contactService.getUserContacts(userId);
+    const seen = new Map();
+    let removed = 0;
+
+    for (const contact of contacts) {
+      const key = contact.name.toLowerCase().trim();
+      if (seen.has(key)) {
+        await contactService.delete(contact.id);
+        removed++;
+      } else {
+        seen.set(key, contact);
+      }
+    }
+
+    if (removed === 0) return `✅ No duplicate contacts found. ${contacts.length} contacts total.`;
+    return `🧹 Removed ${removed} duplicate contact${removed !== 1 ? 's' : ''}. ${seen.size} unique contacts remaining.`;
   }
 
   async handleStreaks(userId) {

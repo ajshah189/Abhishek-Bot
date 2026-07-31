@@ -279,6 +279,26 @@ export class ConversationEngine {
       return { reply: `${num}-${isSeconds ? 'second' : 'minute'} timer`, quickAction: { label, url: `https://www.google.com/search?q=${encodeURIComponent(query)}` }, whatsappLink: null };
     }
 
+    // "delete all contacts" — must come before single-delete check
+    if (/^(?:delete|remove)\s+all\s+contacts/i.test(msg)) {
+      const all = await contactService.getUserContacts(userId);
+      await Promise.all(all.map(c => contactService.delete(c.id)));
+      contextCache.invalidate(userId);
+      return { reply: `All ${all.length} contacts removed.`, quickAction: null, whatsappLink: null };
+    }
+
+    // "delete contact [name]" / "remove contact [name]"
+    const deleteContactMatch = msg.match(/^(?:delete|remove)\s+contact\s+(.+)/i);
+    if (deleteContactMatch) {
+      const c = this.matchContact(await getContacts(), deleteContactMatch[1].trim());
+      if (c) {
+        await contactService.delete(c.id);
+        contextCache.invalidate(userId);
+        return { reply: `${c.name} removed from contacts.`, quickAction: null, whatsappLink: null };
+      }
+      return { reply: `No contact matching "${deleteContactMatch[1].trim()}" found.`, quickAction: null, whatsappLink: null };
+    }
+
     // "save [name]'s number [number]" or "save contact [name] [number]"
     const saveMatch = message.match(/^save\s+(.+?)(?:'s)?\s+(?:number|phone|contact)\s+(\d[\d\s\-+]+)/i) ||
                       message.match(/^save\s+contact\s+(.+?)\s+(\d[\d\s\-+]+)/i);

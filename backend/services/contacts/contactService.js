@@ -17,10 +17,25 @@ function normalizePhone(raw) {
 export class ContactService {
   async create(userId, fields) {
     try {
+      const name = (fields.title || fields.name || 'Contact').trim();
+
+      // Upsert — if a contact with the same name exists, update it instead of creating a duplicate
+      const existing = await this.getUserContacts(userId);
+      const duplicate = existing.find(c => c.name.toLowerCase() === name.toLowerCase());
+      if (duplicate) {
+        const updates = { updatedAt: new Date() };
+        if (fields.phone) updates.phone = normalizePhone(fields.phone);
+        if (fields.email) updates.email = fields.email;
+        if (fields.relationship) updates.relationship = fields.relationship;
+        await db.collection('contacts').doc(duplicate.id).update(updates);
+        logger.info('Contact updated (upsert)', { userId, contactId: duplicate.id, name });
+        return { ...duplicate, ...updates };
+      }
+
       const contactData = {
         id: uuidv4(),
         userId: userId.toString(),
-        name: (fields.title || fields.name || 'Contact').trim(),
+        name,
         phone: normalizePhone(fields.phone),
         email: fields.email || '',
         relationship: fields.relationship || '',
@@ -30,7 +45,7 @@ export class ContactService {
       };
 
       await db.collection('contacts').doc(contactData.id).set(contactData);
-      logger.info('Contact created', { userId, contactId: contactData.id, name: contactData.name });
+      logger.info('Contact created', { userId, contactId: contactData.id, name });
       return contactData;
     } catch (error) {
       logger.error('Failed to create contact', { error: error.message });
