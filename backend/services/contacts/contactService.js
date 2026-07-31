@@ -59,8 +59,7 @@ export class ContactService {
       const snapshot = await db
         .collection('contacts')
         .where('userId', '==', userId.toString())
-        .orderBy('updatedAt', 'desc')
-        .get();
+        .get(); // orderBy removed — composite index may be missing (contacts(userId, updatedAt))
       return snapshot.docs.map(doc => doc.data());
     } catch (error) {
       logger.error('Failed to fetch contacts', { error: error.message });

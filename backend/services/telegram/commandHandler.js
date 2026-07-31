@@ -301,7 +301,11 @@ Quick capture (no slash needed):
   async handleContacts(userId, args) {
     const { contactService } = await import('../contacts/contactService.js');
     const uid = userId.toString();
-    console.log('CONTACTS_QUERY userId:', uid, typeof uid);
+    console.log('CONTACTS_DEBUG', { userId, userIdType: typeof userId, userIdStr: uid });
+
+    // Sample first 3 docs from collection to verify data exists and field names
+    const allDocs = await db.collection('contacts').limit(3).get();
+    console.log('CONTACTS_SAMPLE', allDocs.docs.map(d => ({ id: d.id, userId: d.data().userId, name: d.data().name })));
 
     if (args.length > 0 && args[0] === 'search') {
       const query = args.slice(1).join(' ');
