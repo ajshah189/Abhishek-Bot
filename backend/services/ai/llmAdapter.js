@@ -51,7 +51,7 @@ export class LLMAdapter {
       try {
         const result = await provider.fn();
         resetIfNewDay();
-        dailyCallCount++;
+        dailyCallCount += Math.ceil(result.length / 4); // rough token estimate
         logger.info('LLM_OK', { provider: provider.name });
         return result;
       } catch (error) {

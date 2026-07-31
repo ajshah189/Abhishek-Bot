@@ -341,6 +341,16 @@ export class ConversationEngine {
     this._listContent = null;
     await this.executeActions(userId, parsed.actions, tasks, habits, contacts);
 
+    // ── Single cache invalidation check after all actions run ─────────────
+    const MUTATING_ACTIONS = ['create_task', 'complete_task', 'delete_task',
+      'create_expense', 'delete_expense', 'delete_all_expenses', 'delete_expenses_timerange',
+      'create_habit', 'complete_habit', 'delete_habit', 'delete_all_habits',
+      'create_contact', 'store_memory', 'create_calendar_event', 'store_win',
+      'add_to_list', 'remove_from_list', 'create_list'];
+    if (parsed.actions.some(a => MUTATING_ACTIONS.includes(a.type))) {
+      contextCache.invalidate(userId);
+    }
+
     // ── Win capture: clear pending flag once captured ──────────────────────
     if (winPending && parsed.actions?.some(a => a.type === 'store_win')) {
       winsService.clearWinPending(userId).catch(() => {});
@@ -446,7 +456,6 @@ export class ConversationEngine {
               priority: action.priority || 'medium',
               recurrence_text: action.recurrence_text || ''
             });
-            contextCache.invalidate(userId);
             break;
           }
           case 'create_habit': {
@@ -454,7 +463,6 @@ export class ConversationEngine {
               title: action.name,
               recurrence_text: action.recurrence || 'daily'
             });
-            contextCache.invalidate(userId);
             break;
           }
           case 'complete_habit': {
@@ -462,7 +470,6 @@ export class ConversationEngine {
             const h = habitService.matchHabit(liveHabits, action.match);
             if (h) await habitService.markComplete(h._docId || h.id);
             else logger.warn('complete_habit: no match', { match: action.match });
-            contextCache.invalidate(userId);
             break;
           }
           case 'delete_habit': {
@@ -470,7 +477,6 @@ export class ConversationEngine {
             const h = habitService.matchHabit(liveHabits, action.match);
             if (h) await habitService.delete(h._docId || h.id);
             else logger.warn('delete_habit: no match', { match: action.match });
-            contextCache.invalidate(userId);
             break;
           }
           case 'delete_all_habits': {
@@ -479,7 +485,6 @@ export class ConversationEngine {
               await Promise.all(liveHabits.map(h => habitService.delete(h._docId || h.id)));
               logger.info('All habits deleted', { userId, count: liveHabits.length });
             }
-            contextCache.invalidate(userId);
             break;
           }
           case 'create_expense': {
@@ -490,20 +495,17 @@ export class ConversationEngine {
               description: action.description || ''
             });
             logger.info('create_expense saved', { userId, amount: action.amount, category: action.category });
-            contextCache.invalidate(userId);
             break;
           }
           case 'delete_all_expenses': {
             const count = await expenseService.deleteAll(userId);
             logger.info('delete_all_expenses completed', { userId, count });
-            contextCache.invalidate(userId);
             break;
           }
           case 'delete_expense': {
             const deleted = await expenseService.deleteByKeyword(userId, action.match || '');
             if (deleted === 0) logger.warn('delete_expense: no match found', { match: action.match });
             else logger.info('delete_expense completed', { userId, match: action.match, count: deleted });
-            contextCache.invalidate(userId);
             break;
           }
           case 'delete_expenses_timerange': {
@@ -516,7 +518,6 @@ export class ConversationEngine {
               default: logger.warn('delete_expenses_timerange: unknown period', { period: action.period });
             }
             logger.info('delete_expenses_timerange completed', { userId, period: action.period, count });
-            contextCache.invalidate(userId);
             break;
           }
           case 'delete_tasks_timerange': {
@@ -528,7 +529,6 @@ export class ConversationEngine {
               default: logger.warn('delete_tasks_timerange: unknown period', { period: action.period });
             }
             logger.info('delete_tasks_timerange completed', { userId, period: action.period, count });
-            contextCache.invalidate(userId);
             break;
           }
           case 'create_contact': {
@@ -591,13 +591,11 @@ export class ConversationEngine {
           case 'complete_task': {
             const t = this.matchTask(currentTasks, action.match);
             if (t) await taskService.updateStatus(t.id, 'completed');
-            contextCache.invalidate(userId);
             break;
           }
           case 'delete_task': {
             const t = this.matchTask(currentTasks, action.match);
             if (t) await taskService.delete(t.id);
-            contextCache.invalidate(userId);
             break;
           }
           case 'ask_followup': {
