@@ -129,7 +129,7 @@ async function auditSystem() {
   const packagePath = path.join(projectRoot, 'package.json');
   if (fs.existsSync(packagePath)) {
     const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf-8'));
-    const required = ['express', 'firebase-admin', 'groq-sdk', '@anthropic-ai/sdk', 'dotenv'];
+    const required = ['express', 'firebase-admin', 'groq-sdk', 'dotenv'];
     const installed = required.filter(dep => pkg.dependencies[dep]);
     log('✅', `${installed.length}/${required.length} critical dependencies installed`);
   }

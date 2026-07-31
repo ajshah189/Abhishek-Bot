@@ -28,7 +28,14 @@ process.on('unhandledRejection', (reason) => {
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
-const apiCors = cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] });
+// Fix 3 — restrict API CORS to the deployed dashboard origin only
+const apiCors = cors({
+  origin: process.env.DASHBOARD_URL || 'https://abhishek-assistant-d2e8f.web.app',
+  methods: ['POST', 'OPTIONS']
+});
+
+// Fix 4 — per-user rate limiter (drop duplicate sends within 1 second)
+const userLastMessage = new Map();
 
 function requireApiKey(req, res, next) {
   const key = req.headers['x-api-key'];
@@ -48,18 +55,40 @@ app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
 
 // Telegram webhook — handler lazy-loaded so Firebase init failure is a
 // per-request 500, not a startup crash
-app.post('/webhook', async (req, res) => {
-  console.log('WEBHOOK_IN:', JSON.stringify(req.body).slice(0, 100));
-  try {
-    const { telegramHandler } = await import('./services/telegram/handler.js');
-    const result = await telegramHandler.handleUpdate(req.body);
-    console.log('WEBHOOK_OK');
-    res.json(result);
-  } catch (error) {
-    console.error('WEBHOOK_ERR:', error.message, error.stack);
-    res.status(500).json({ error: error.message });
+app.post('/webhook',
+  // Fix 1 — verify Telegram webhook secret (set via TELEGRAM_WEBHOOK_SECRET env var)
+  (req, res, next) => {
+    const secret = req.headers['x-telegram-bot-api-secret-token'];
+    if (process.env.TELEGRAM_WEBHOOK_SECRET && secret !== process.env.TELEGRAM_WEBHOOK_SECRET) {
+      console.warn('WEBHOOK_UNAUTHORIZED: bad or missing secret');
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    next();
+  },
+  async (req, res) => {
+    // Fix 4 — drop rapid duplicate messages from the same user (< 1 second apart)
+    const incomingUserId = req.body?.message?.from?.id || req.body?.callback_query?.from?.id;
+    if (incomingUserId) {
+      const now = Date.now();
+      const last = userLastMessage.get(incomingUserId) || 0;
+      if (now - last < 1000) {
+        return res.json({ ok: true });
+      }
+      userLastMessage.set(incomingUserId, now);
+    }
+
+    console.log('WEBHOOK_IN:', JSON.stringify(req.body).slice(0, 100));
+    try {
+      const { telegramHandler } = await import('./services/telegram/handler.js');
+      const result = await telegramHandler.handleUpdate(req.body);
+      console.log('WEBHOOK_OK');
+      res.json(result);
+    } catch (error) {
+      console.error('WEBHOOK_ERR:', error.message, error.stack);
+      res.status(500).json({ error: error.message });
+    }
   }
-});
+);
 
 // Google OAuth callback
 app.get('/auth/google/callback', async (req, res) => {
@@ -110,9 +139,10 @@ app.post('/api/voice', apiCors, requireApiKey, upload.single('audio'), async (re
     const transcript = await voiceTranscriber.transcribeAudioBuffer(req.file.buffer, req.file.originalname || 'voice.webm');
     if (!transcript) return res.status(422).json({ error: 'Transcription failed or empty' });
 
-    const reply = await conversationEngine.process(userId, userId, transcript);
-    const quickAction = conversationEngine._quickAction || null;
-    conversationEngine._quickAction = null;
+    const result = await conversationEngine.process(userId, userId, transcript);
+    const { reply, quickAction } = typeof result === 'string'
+      ? { reply: result, quickAction: null }
+      : result;
     res.json({ transcript, reply, quickAction });
   } catch (error) {
     console.error('API_VOICE_ERR:', error.message);
@@ -129,9 +159,10 @@ app.post('/api/text', apiCors, requireApiKey, async (req, res) => {
     if (!userId) return res.status(400).json({ error: 'userId required' });
 
     const { conversationEngine } = await import('./services/ai/conversationEngine.js');
-    const reply = await conversationEngine.process(userId, userId, message);
-    const quickAction = conversationEngine._quickAction || null;
-    conversationEngine._quickAction = null;
+    const result = await conversationEngine.process(userId, userId, message);
+    const { reply, quickAction } = typeof result === 'string'
+      ? { reply: result, quickAction: null }
+      : result;
     res.json({ reply, quickAction });
   } catch (error) {
     console.error('API_TEXT_ERR:', error.message);

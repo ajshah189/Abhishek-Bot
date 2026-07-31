@@ -326,20 +326,13 @@ export class ConversationEngine {
     // ── Reply guardrails ───────────────────────────────────────────────────
     let reply = this.cleanReply(parsed.reply, recentTurns.length);
 
-    // Append calendar link cleanly after the reply (separate from LLM text)
+    // Calendar note appended inline (informational link, not a button)
     if (this._calendarNote) {
       reply += '\n' + this._calendarNote;
       this._calendarNote = null;
     }
 
-    // Append WhatsApp deep link (functional, not an error message)
-    if (this._whatsappLink) {
-      const { url } = this._whatsappLink;
-      reply += `\n\n👉 [Tap to send on WhatsApp](${url})`;
-      this._whatsappLink = null;
-    }
-
-    // Send VCF contact file (fire-and-forget alongside the text reply)
+    // VCF contact file: fire-and-forget, no need to wait
     if (this._vcfContact) {
       const { name, phone, email } = this._vcfContact;
       telegramService.sendContactVCF(chatId, name, phone, email).catch(err =>
@@ -348,7 +341,13 @@ export class ConversationEngine {
       this._vcfContact = null;
     }
 
-    return reply;
+    // Return side-channel results in the object rather than mutating instance fields
+    const quickAction  = this._quickAction  || null;
+    const whatsappLink = this._whatsappLink || null;
+    this._quickAction  = null;
+    this._whatsappLink = null;
+
+    return { reply, quickAction, whatsappLink };
   }
 
   cleanReply(reply, priorTurnCount) {
@@ -893,7 +892,7 @@ export class ConversationEngine {
 
     await conversationMemory.addTurn(userId, 'user', message);
     await conversationMemory.addTurn(userId, 'assistant', reply || 'Got it.');
-    return this.cleanReply(reply, recentTurns.length);
+    return { reply: this.cleanReply(reply, recentTurns.length), quickAction: null, whatsappLink: null };
   }
 }
 

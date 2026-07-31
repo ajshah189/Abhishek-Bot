@@ -10,6 +10,12 @@ export class TelegramHandler {
     try {
       const userId = extractUserId(update);
       const chatId = extractChatId(update);
+
+      // Fix 2 — owner gate: silently ignore messages from anyone else
+      const ownerId = process.env.OWNER_TELEGRAM_ID;
+      if (ownerId && userId?.toString() !== ownerId.toString()) {
+        return { ok: true };
+      }
       let message = extractUserMessage(update);
 
       // ── Voice notes: transcribe → treat as text ───────────────────────────
@@ -95,22 +101,17 @@ export class TelegramHandler {
       }
 
       // ── Conversation brain ────────────────────────────────────────────────
-      const reply = await conversationEngine.process(userId, chatId, message);
+      const result = await conversationEngine.process(userId, chatId, message);
+      const { reply, quickAction, whatsappLink } = typeof result === 'string'
+        ? { reply: result, quickAction: null, whatsappLink: null }
+        : result;
 
-      // Quick action button (phone call, navigate, music, timer, web open, SMS)
-      if (conversationEngine._quickAction) {
-        const { label, url } = conversationEngine._quickAction;
-        conversationEngine._quickAction = null;
-        await telegramService.sendMessageWithButton(chatId, reply, label, url);
-      // WhatsApp deep link embedded in reply text → send as tappable button
+      if (quickAction) {
+        await telegramService.sendMessageWithButton(chatId, reply, quickAction.label, quickAction.url);
+      } else if (whatsappLink) {
+        await telegramService.sendMessageWithButton(chatId, reply, '👉 Send on WhatsApp', whatsappLink.url);
       } else {
-        const waMatch = reply.match(/\n\n👉 \[Tap to send on WhatsApp\]\((https:\/\/wa\.me\/[^\)]+)\)/);
-        if (waMatch) {
-          const textPart = reply.slice(0, reply.indexOf('\n\n👉 [Tap to send on WhatsApp]')).trim();
-          await telegramService.sendMessageWithButton(chatId, textPart || reply, '👉 Send on WhatsApp', waMatch[1]);
-        } else {
-          await telegramService.sendMessage(chatId, reply);
-        }
+        await telegramService.sendMessage(chatId, reply);
       }
 
       return { ok: true };
