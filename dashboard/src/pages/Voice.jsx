@@ -12,7 +12,36 @@ const isStandalone =
 
 const WA_LINK_RE = /\n\n👉 \[Tap to send on WhatsApp\]\((https:\/\/wa\.me\/[^)]+)\)/;
 
-function ReplyBubble({ text, typing, onDone }) {
+function ActionButton({ label, url }) {
+  const isCall = url.startsWith('tel:');
+  const isSms  = url.startsWith('sms:');
+  const isMap  = url.includes('maps.google') || url.includes('maps/dir');
+  const isWA   = url.includes('wa.me');
+  const bg = isCall ? '#2ecc71' : isSms ? '#3498db' : isMap ? '#e67e22' : isWA ? '#25D366' : '#e94560';
+  return (
+    <a
+      href={url}
+      target={isCall || isSms ? '_self' : '_blank'}
+      rel="noopener noreferrer"
+      style={{
+        display: 'block',
+        marginTop: 10,
+        padding: '9px 16px',
+        background: bg,
+        color: '#fff',
+        borderRadius: 20,
+        textDecoration: 'none',
+        fontWeight: 600,
+        fontSize: 13,
+        textAlign: 'center'
+      }}
+    >
+      {label}
+    </a>
+  );
+}
+
+function ReplyBubble({ text, typing, onDone, quickAction }) {
   const waMatch = text.match(WA_LINK_RE);
   const cleanText = waMatch ? text.slice(0, text.indexOf('\n\n👉 [Tap to send on WhatsApp]')).trim() : text;
   const waUrl = waMatch?.[1];
@@ -20,27 +49,8 @@ function ReplyBubble({ text, typing, onDone }) {
   return (
     <div style={{ alignSelf: 'flex-start', background: '#1a1a2e', border: '1px solid rgba(233,69,96,0.25)', borderRadius: '16px 16px 16px 4px', padding: '10px 14px', maxWidth: '85%', fontSize: 14, color: '#cbd5e0', lineHeight: 1.5 }}>
       {typing ? <TypingText text={cleanText} onDone={onDone} /> : cleanText}
-      {waUrl && (
-        <a
-          href={waUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            display: 'block',
-            marginTop: 10,
-            padding: '8px 14px',
-            background: '#25D366',
-            color: '#fff',
-            borderRadius: 20,
-            textDecoration: 'none',
-            fontWeight: 600,
-            fontSize: 13,
-            textAlign: 'center'
-          }}
-        >
-          👉 Tap to send on WhatsApp
-        </a>
-      )}
+      {waUrl && <ActionButton label="👉 Tap to send on WhatsApp" url={waUrl} />}
+      {quickAction && <ActionButton label={quickAction.label} url={quickAction.url} />}
     </div>
   );
 }
@@ -70,6 +80,7 @@ export default function Voice() {
   const [textInput, setTextInput] = useState('');
   const [lastTranscript, setLastTranscript] = useState('');
   const [lastReply, setLastReply] = useState('');
+  const [lastQuickAction, setLastQuickAction] = useState(null);
   const [typing, setTyping] = useState(false);
   const [error, setError] = useState('');
 
@@ -132,12 +143,13 @@ export default function Voice() {
         throw new Error(err.error || `HTTP ${res.status}`);
       }
 
-      const { transcript, reply } = await res.json();
+      const { transcript, reply, quickAction } = await res.json();
       setLastTranscript(transcript);
       setLastReply(reply);
+      setLastQuickAction(quickAction || null);
       setTyping(true);
       setStatus('done');
-      setHistory(h => [...h.slice(-9), { transcript, reply }]);
+      setHistory(h => [...h.slice(-9), { transcript, reply, quickAction: quickAction || null }]);
     } catch (err) {
       setError(err.message);
       setStatus('idle');
@@ -163,11 +175,12 @@ export default function Voice() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
       }
-      const { reply } = await res.json();
+      const { reply, quickAction } = await res.json();
       setLastReply(reply);
+      setLastQuickAction(quickAction || null);
       setTyping(true);
       setStatus('done');
-      setHistory(h => [...h.slice(-9), { transcript: msg, reply }]);
+      setHistory(h => [...h.slice(-9), { transcript: msg, reply, quickAction: quickAction || null }]);
     } catch (err) {
       setError(err.message);
       setStatus('idle');
@@ -213,7 +226,7 @@ export default function Voice() {
             <div style={{ alignSelf: 'flex-end', background: '#2d2d44', borderRadius: '16px 16px 4px 16px', padding: '10px 14px', maxWidth: '80%', fontSize: 14, color: '#e2e8f0' }}>
               {item.transcript}
             </div>
-            <ReplyBubble text={item.reply} typing={false} />
+            <ReplyBubble text={item.reply} typing={false} quickAction={item.quickAction} />
           </div>
         ))}
 
@@ -236,7 +249,7 @@ export default function Voice() {
             <div style={{ alignSelf: 'flex-end', background: '#2d2d44', borderRadius: '16px 16px 4px 16px', padding: '10px 14px', maxWidth: '80%', fontSize: 14, color: '#e2e8f0' }}>
               {lastTranscript}
             </div>
-            <ReplyBubble text={lastReply} typing={typing} onDone={() => setTyping(false)} />
+            <ReplyBubble text={lastReply} typing={typing} onDone={() => setTyping(false)} quickAction={lastQuickAction} />
           </div>
         )}
 

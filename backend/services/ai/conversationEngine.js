@@ -58,7 +58,7 @@ RULES:
 - "my dashboard/website" → https://abhishek-assistant-d2e8f.web.app
 - FOLLOW-UP context present → user answered your question — complete the goal now, don't ask again.`;
 
-// Action schemas — only appended when message likely needs an action (~325 tokens)
+// Action schemas — only appended when message likely needs an action (~400 tokens)
 const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array — use exact field names):
 {"type":"create_task","title":"...","deadline_text":"raw date","recurrence_text":"raw recurrence","priority":"high|medium|low"}
 {"type":"create_expense","amount":0,"category":"food|travel|shopping|education|health|other","description":"..."}
@@ -70,8 +70,47 @@ const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array — use exact field nam
 {"type":"create_contact","name":"...","phone":"...","relationship":"..."}
 {"type":"save_to_phone","name":"...","phone":"...","email":"..."} — sends .vcf file; combine with create_contact to also save to Firestore
 {"type":"send_whatsapp","contact_name":"...","message":"..."} — match name to KNOWN CONTACTS in context
+{"type":"phone_call","contact_name":"..."} — "call [name]". Generates a tel: link. Contact must be in KNOWN CONTACTS.
+{"type":"send_sms","contact_name":"...","message":"..."} — "text [name] [message]". Generates sms: link with pre-filled text.
+{"type":"navigate","destination":"..."} — "navigate to [place]", "directions to [place]". Generates Google Maps link.
+{"type":"play_music","query":"..."} — "play [song/artist/genre]". Generates YouTube Music search link.
+{"type":"web_open","url_or_query":"..."} — "open [app]", "open [site]". Known apps open directly; others fall back to Google search.
+{"type":"set_timer","minutes":5,"label":"..."} — "set a [N] minute timer". Generates a Google timer link.
 {"type":"web_search","query":"3-6 word query"} — use for: news, live prices/scores, current events, facts you're uncertain of. NOT for: general concepts, personal data already in context. Placeholder reply: "Let me check that for you." Then cite sources.
-{"type":"ask_followup","waiting_for":"label","partial":{}}`;
+{"type":"ask_followup","waiting_for":"label","partial":{}}
+
+PHONE ACTION EXAMPLES:
+"call Riya" → {"type":"phone_call","contact_name":"Riya"}
+"text dad I'll be late" → {"type":"send_sms","contact_name":"dad","message":"I'll be late"}
+"navigate to airport" → {"type":"navigate","destination":"Ahmedabad airport"}
+"play some lo-fi" → {"type":"play_music","query":"lo-fi hip hop"}
+"open Swiggy" → {"type":"web_open","url_or_query":"swiggy"}
+"set a 10 minute timer" → {"type":"set_timer","minutes":10,"label":"timer"}
+If contact not found for call/SMS, say "I don't have [name]'s number. Save it with 'save [name]'s number [number]'"`;
+
+// ── App shortcut map ────────────────────────────────────────────────────────
+const APP_URLS = {
+  amazon: 'https://www.amazon.in',
+  flipkart: 'https://www.flipkart.com',
+  swiggy: 'https://www.swiggy.com',
+  zomato: 'https://www.zomato.com',
+  uber: 'https://m.uber.com',
+  ola: 'https://www.olacabs.com',
+  gpay: 'https://pay.google.com',
+  paytm: 'https://paytm.com',
+  linkedin: 'https://www.linkedin.com',
+  instagram: 'https://www.instagram.com',
+  twitter: 'https://www.twitter.com',
+  youtube: 'https://www.youtube.com',
+  gmail: 'https://mail.google.com',
+  maps: 'https://maps.google.com',
+  drive: 'https://drive.google.com',
+  moodle: 'https://moodle.iima.ac.in',
+  notion: 'https://www.notion.so',
+  spotify: 'https://open.spotify.com',
+  netflix: 'https://www.netflix.com',
+  hotstar: 'https://www.hotstar.com'
+};
 
 // ── Message classification helpers ──────────────────────────────────────────
 const GREETING_RE = /^(hi+|hey+|hello+|sup|yo+|hiya|morning|evening|good\s+(morning|afternoon|evening|night)|thanks|thank\s*you|ty|ok(ay)?|k|great|cool|nice|sure|👋)[\s!.?]*$/i;
@@ -81,7 +120,7 @@ function isSimpleGreeting(msg) {
 }
 
 function needsActions(msg) {
-  return /\b(add|create|log|track|remind|save|delete|remove|clear|complete|done|finish|mark|schedule|meeting|appointment|spend|expense|paid|buy|habit|gym|meditate|task|contact|phone|whatsapp|send|search|news|book|cancel|set|update)\b/i.test(msg);
+  return /\b(add|create|log|track|remind|save|delete|remove|clear|complete|done|finish|mark|schedule|meeting|appointment|spend|expense|paid|buy|habit|gym|meditate|task|contact|phone|whatsapp|send|search|news|book|cancel|set|update|call|navigate|directions|text|sms|play|open|timer)\b/i.test(msg);
 }
 
 function buildTimeBlock(now) {
@@ -150,7 +189,7 @@ export class ConversationEngine {
     }
 
     // ── Determine which optional context sections are needed ───────────────
-    const wantsContacts = /contact|whatsapp|message\s+\w|phone|number|vcf|send.*to/i.test(message);
+    const wantsContacts = /contact|whatsapp|message\s+\w|phone|number|vcf|send.*to|\bcall\s+\w|text\s+\w|\bsms\b/i.test(message);
     const wantsJournal  = /journal|mood|feeling|reflect/i.test(message);
     const wantsDoc      = /pdf|document|summarize|paper|article/i.test(message);
 
@@ -259,7 +298,8 @@ export class ConversationEngine {
     this._searchResults = null;
     this._searchQuery = null;
     this._vcfContact = null;
-    await this.executeActions(userId, parsed.actions, tasks, habits);
+    this._quickAction = null;
+    await this.executeActions(userId, parsed.actions, tasks, habits, contacts);
 
     // ── Second LLM call: synthesise search results ─────────────────────────
     if (this._searchResults) {
@@ -340,7 +380,7 @@ export class ConversationEngine {
     return { reply: raw.trim() || "Got it.", actions: [] };
   }
 
-  async executeActions(userId, actions, currentTasks, currentHabits) {
+  async executeActions(userId, actions, currentTasks, currentHabits, currentContacts = []) {
     // Contacts created in this same turn — checked before re-querying Firestore
     // so that create_contact + send_whatsapp in one turn works without a round-trip.
     const justCreatedContacts = [];
@@ -526,6 +566,53 @@ export class ConversationEngine {
             }
             break;
           }
+          case 'phone_call': {
+            const allContacts = [...justCreatedContacts, ...currentContacts];
+            const c = contactService.matchContact(allContacts, action.contact_name);
+            if (c?.phone) {
+              const dialCode = c.phone.length === 10 ? `+91${c.phone}` : `+${c.phone}`;
+              this._quickAction = { label: `📞 Call ${c.name}`, url: `tel:${dialCode}` };
+            } else {
+              logger.warn('phone_call: contact not found', { contact_name: action.contact_name });
+            }
+            break;
+          }
+          case 'send_sms': {
+            const allContacts = [...justCreatedContacts, ...currentContacts];
+            const c = contactService.matchContact(allContacts, action.contact_name);
+            if (c?.phone) {
+              const dialCode = c.phone.length === 10 ? `+91${c.phone}` : `+${c.phone}`;
+              const body = encodeURIComponent(action.message || '');
+              this._quickAction = { label: `💬 Send SMS to ${c.name}`, url: `sms:${dialCode}?body=${body}` };
+            } else {
+              logger.warn('send_sms: contact not found', { contact_name: action.contact_name });
+            }
+            break;
+          }
+          case 'navigate': {
+            const dest = encodeURIComponent(action.destination || '');
+            this._quickAction = { label: `🗺️ Navigate to ${action.destination}`, url: `https://www.google.com/maps/dir/?api=1&destination=${dest}` };
+            break;
+          }
+          case 'play_music': {
+            const q = encodeURIComponent(action.query || '');
+            this._quickAction = { label: `🎵 Play on YouTube Music`, url: `https://music.youtube.com/search?q=${q}` };
+            break;
+          }
+          case 'web_open': {
+            const key = (action.url_or_query || '').toLowerCase().trim();
+            const knownUrl = Object.entries(APP_URLS).find(([app]) => key.includes(app))?.[1];
+            const url = knownUrl || `https://www.google.com/search?q=${encodeURIComponent(action.url_or_query || '')}`;
+            const label = knownUrl ? `🔗 Open ${action.url_or_query}` : `🔍 Search: ${action.url_or_query}`;
+            this._quickAction = { label, url };
+            break;
+          }
+          case 'set_timer': {
+            const mins = Math.max(1, parseInt(action.minutes) || 5);
+            const label = action.label ? `⏱️ ${mins}min — ${action.label}` : `⏱️ Set ${mins}min timer`;
+            this._quickAction = { label, url: `https://www.google.com/search?q=set+timer+${mins}+minutes` };
+            break;
+          }
           case 'web_search': {
             try {
               const { webSearchService } = await import('../search/webSearchService.js');
@@ -665,6 +752,16 @@ export class ConversationEngine {
       if (score > bestScore) { bestScore = score; best = t; }
     }
     return bestScore > 0 ? best : null;
+  }
+
+  matchContact(contacts, name) {
+    if (!name || !contacts?.length) return null;
+    const target = name.toLowerCase().trim();
+    return contacts.find(c => c.name.toLowerCase() === target) ||
+           contacts.find(c => c.name.toLowerCase().split(' ')[0] === target) ||
+           contacts.find(c => c.name.toLowerCase().startsWith(target)) ||
+           contacts.find(c => c.name.toLowerCase().includes(target)) ||
+           null;
   }
 }
 

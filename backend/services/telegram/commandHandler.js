@@ -70,6 +70,9 @@ export class CommandHandler {
         case 'savecontact':
           return await this.handleSaveContact(userId, chatId, args);
 
+        case 'apps':
+          return this.handleApps();
+
         case 'news':
           return await this.handleNews(userId, chatId, args);
 
@@ -247,6 +250,7 @@ Search
 
 Contacts
 /savecontact [name] - Send saved contact as .vcf to add to phone
+/apps - List all quick phone actions (call, SMS, maps, music, timer)
 
 Utilities
 /clear - Reset conversation memory
@@ -407,6 +411,23 @@ Spending: ${spendBlock}`;
     );
 
     return summary + calendarFootnote;
+  }
+
+  handleApps() {
+    return `📱 Quick Actions — just say it naturally:
+
+📞 "Call [name]" — opens your phone dialler
+💬 "Text [name] [message]" — opens SMS with pre-filled message
+📱 "Tell [name] [message]" — WhatsApp message
+🗺️ "Navigate to [place]" — Google Maps directions
+🎵 "Play [song/artist/genre]" — YouTube Music
+🔗 "Open [app name]" — opens app or website
+⏱️ "Set [X] minute timer" — Google timer
+
+Supported apps:
+Amazon · Flipkart · Swiggy · Zomato · Uber · Ola · GPay · Paytm · LinkedIn · Instagram · Twitter · YouTube · Gmail · Maps · Drive · Moodle · Notion · Spotify · Netflix · Hotstar
+
+Contact must be saved for calling/texting. Say "save [name]'s number [number]" first.`;
   }
 
   async handleSaveContact(userId, chatId, args) {

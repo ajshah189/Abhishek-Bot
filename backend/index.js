@@ -111,7 +111,9 @@ app.post('/api/voice', apiCors, requireApiKey, upload.single('audio'), async (re
     if (!transcript) return res.status(422).json({ error: 'Transcription failed or empty' });
 
     const reply = await conversationEngine.process(userId, userId, transcript);
-    res.json({ transcript, reply });
+    const quickAction = conversationEngine._quickAction || null;
+    conversationEngine._quickAction = null;
+    res.json({ transcript, reply, quickAction });
   } catch (error) {
     console.error('API_VOICE_ERR:', error.message);
     res.status(500).json({ error: error.message });
@@ -128,7 +130,9 @@ app.post('/api/text', apiCors, requireApiKey, async (req, res) => {
 
     const { conversationEngine } = await import('./services/ai/conversationEngine.js');
     const reply = await conversationEngine.process(userId, userId, message);
-    res.json({ reply });
+    const quickAction = conversationEngine._quickAction || null;
+    conversationEngine._quickAction = null;
+    res.json({ reply, quickAction });
   } catch (error) {
     console.error('API_TEXT_ERR:', error.message);
     res.status(500).json({ error: error.message });
