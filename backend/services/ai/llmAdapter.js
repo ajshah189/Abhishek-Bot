@@ -78,7 +78,7 @@ export class LLMAdapter {
     ));
 
     const model = gemini.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       generationConfig: { temperature, maxOutputTokens: 1024 }
     });
 
