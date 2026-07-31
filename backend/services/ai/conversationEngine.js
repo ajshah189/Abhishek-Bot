@@ -72,14 +72,14 @@ const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array):
 {"type":"create_calendar_event","title":"...","date":"raw","end_date":"raw","location":"...","description":"..."}
 {"type":"create_contact","name":"...","phone":"...","relationship":"..."} | {"type":"save_to_phone","name":"...","phone":"...","email":"..."}
 {"type":"send_whatsapp","contact_name":"...","message":"..."} — name must match KNOWN CONTACTS
-{"type":"phone_call","contact_name":"..."} | {"type":"send_sms","contact_name":"...","message":"..."}
+{"type":"phone_call","contact_name":"..."}
 {"type":"navigate","destination":"..."} | {"type":"play_music","query":"..."} | {"type":"web_open","url_or_query":"..."} | {"type":"set_timer","minutes":5,"label":"..."}
 {"type":"web_search","query":"3-6 word query"} — news, live prices, facts you're uncertain of; placeholder reply: "Let me check."
 {"type":"store_win","text":"..."} — accomplishment shared by user
 {"type":"create_list","name":"..."} | {"type":"add_to_list","list_name":"...","item":"..."} | {"type":"remove_from_list","list_name":"...","item":"..."} | {"type":"show_list","list_name":"..."} | {"type":"share_list","list_name":"...","share_with":"telegram_user_id"}
 {"type":"ask_followup","waiting_for":"label","partial":{}}
-If contact not found for call/SMS: "I don't have [name]'s number — save it with 'save [name]'s number [number]'"
-Examples: "call Mom"→phone_call | "text dad I'll be late"→send_sms | "navigate to airport"→navigate | "play lo-fi"→play_music | "open Swiggy"→web_open | "10 min timer"→set_timer`;
+If contact not found for call/WhatsApp: "I don't have [name]'s number — save it with 'save [name]'s number [number]'"
+Examples: "call Mom"→phone_call | "text dad I'll be late"→send_whatsapp | "navigate to airport"→navigate | "play lo-fi"→play_music | "open Swiggy"→web_open | "10 min timer"→set_timer`;
 
 // ── App shortcut map ────────────────────────────────────────────────────────
 const APP_URLS = {
@@ -216,16 +216,26 @@ export class ConversationEngine {
       return { reply: `I don't have ${callMatch[1].trim()}'s number. Save it with "save ${callMatch[1].trim()}'s number [number]"`, quickAction: null, whatsappLink: null };
     }
 
-    // "text [name] [message]" or "sms [name] [message]"
-    const smsMatch = msg.match(/^(?:text|sms)\s+(.+?)\s+(?:saying\s+)?(.+)/i);
-    if (smsMatch) {
-      const c = this.matchContact(await getContacts(), smsMatch[1].trim());
-      if (c?.phone) {
-        const dialCode = c.phone.length === 10 ? `+91${c.phone}` : `+${c.phone}`;
-        const body = encodeURIComponent(smsMatch[2].trim());
-        return { reply: `SMS to ${c.name}: "${smsMatch[2].trim()}"`, quickAction: { label: `💬 Send SMS to ${c.name}`, url: `sms:${dialCode}?body=${body}` }, whatsappLink: null };
+    // Unified WhatsApp handler: "tell/text/sms/message/whatsapp/send [to] [name] [msg]"
+    // All messaging goes to WhatsApp — SMS is not used.
+    const waPatterns = [
+      /^(?:tell|message|text|sms|send|whatsapp)\s+(?:to\s+)?(.+?)\s*,\s*(.+)/i,
+      /^(?:tell|message|text|sms|send|whatsapp)\s+(?:to\s+)?(.+?)\s+(?:on\s+whatsapp\s*,?\s*)?(?:saying\s+|that\s+)?(.+)/i,
+    ];
+    for (const pattern of waPatterns) {
+      const waMatch = message.match(pattern);
+      if (waMatch) {
+        const contactName = waMatch[1].replace(/\s+on\s+whatsapp$/i, '').replace(/\s+on$/i, '').replace(/,$/, '').trim();
+        const messageText = waMatch[2]?.trim() || '';
+        const c = this.matchContact(await getContacts(), contactName);
+        if (c?.phone) {
+          if (!messageText) return { reply: `What should I tell ${c.name}?`, quickAction: null, whatsappLink: null };
+          const dialCode = c.phone.length === 10 ? `91${c.phone}` : c.phone;
+          const url = `https://wa.me/${dialCode}?text=${encodeURIComponent(messageText)}`;
+          return { reply: `Message to ${c.name}: "${messageText}"`, quickAction: null, whatsappLink: { url } };
+        }
+        return { reply: `I don't have ${contactName}'s number. Save it with "save ${contactName}'s number [number]"`, quickAction: null, whatsappLink: null };
       }
-      return { reply: `I don't have ${smsMatch[1].trim()}'s number.`, quickAction: null, whatsappLink: null };
     }
 
     // "navigate to [place]" or "directions to [place]" or "go to [place]"
@@ -250,26 +260,6 @@ export class ConversationEngine {
       const url = knownUrl || `https://www.google.com/search?q=${encodeURIComponent(openMatch[1].trim())}`;
       const label = knownUrl ? `🔗 Open ${openMatch[1].trim()}` : `🔍 Search: ${openMatch[1].trim()}`;
       return { reply: `Opening ${openMatch[1].trim()}`, quickAction: { label, url }, whatsappLink: null };
-    }
-
-    // "message/tell/whatsapp [name] [text]" or "message [name] on whatsapp [text]"
-    // Also handles bare "whatsapp [name] [message]" where "whatsapp" is the verb
-    const waMatch = message.match(/^(?:message|tell|whatsapp|send)\s+(.+?)\s+(?:on\s+whatsapp\s*,?\s*|saying\s+)(.+)/i) ||
-                    message.match(/^(?:message|tell|whatsapp|send)\s+(.+?)\s+on\s+whatsapp$/i) ||
-                    (/^whatsapp\s+/i.test(message) && message.match(/^whatsapp\s+(\S+)\s+(.+)/i));
-    if (waMatch) {
-      const contactName = waMatch[1].replace(/\s+on$/i, '').trim();
-      const messageText = waMatch[2]?.trim() || '';
-      const c = this.matchContact(await getContacts(), contactName);
-      if (c?.phone) {
-        if (!messageText) {
-          return { reply: `What should I tell ${c.name}?`, quickAction: null, whatsappLink: null };
-        }
-        const dialCode = c.phone.length === 10 ? `91${c.phone}` : c.phone;
-        const url = `https://wa.me/${dialCode}?text=${encodeURIComponent(messageText)}`;
-        return { reply: `Message to ${c.name}: "${messageText}"`, quickAction: null, whatsappLink: { url } };
-      }
-      return { reply: `I don't have ${contactName}'s number. Save it with "save ${contactName}'s number [number]"`, quickAction: null, whatsappLink: null };
     }
 
     // "set timer [X] mins/seconds"
@@ -760,22 +750,6 @@ export class ConversationEngine {
               this._quickAction = { label: `📞 Call ${callContact.name}`, url: `tel:${dialCode}` };
             } else {
               logger.warn('phone_call: contact not found', { contact_name: action.contact_name });
-            }
-            break;
-          }
-          case 'send_sms': {
-            let smsContacts = [...justCreatedContacts, ...currentContacts];
-            let smsContact = contactService.matchContact(smsContacts, action.contact_name);
-            if (!smsContact) {
-              const liveContacts = await contactService.getUserContacts(userId);
-              smsContact = contactService.matchContact(liveContacts, action.contact_name);
-            }
-            if (smsContact?.phone) {
-              const dialCode = smsContact.phone.length === 10 ? `+91${smsContact.phone}` : `+${smsContact.phone}`;
-              const body = encodeURIComponent(action.message || '');
-              this._quickAction = { label: `💬 SMS ${smsContact.name}`, url: `sms:${dialCode}?body=${body}` };
-            } else {
-              logger.warn('send_sms: contact not found', { contact_name: action.contact_name });
             }
             break;
           }
