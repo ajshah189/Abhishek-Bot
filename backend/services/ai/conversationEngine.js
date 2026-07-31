@@ -39,22 +39,60 @@ const USER_NAME     = process.env.USER_NAME     || 'User';
 const USER_TIMEZONE = process.env.USER_TIMEZONE || 'Asia/Kolkata';
 const DASHBOARD_URL = process.env.DASHBOARD_URL || '';
 
-// ── System prompt ───────────────────────────────────────────────────────────
-// Core personality + rules — always included (~375 tokens)
-const SYSTEM_PROMPT_CORE = `You are ${USER_NAME}'s personal chief-of-staff. Sharp, proactive, crisp.
+// ── Conversation prompt — free-form mode (no JSON, pure personality) ───────
+const CONVERSATION_PROMPT = `You are ${USER_NAME}'s personal chief-of-staff and trusted advisor. You know each other well.
+
+YOUR PERSONALITY:
+- Sharp, witty, and direct. You don't waste words but you're never cold.
+- You have genuine opinions — when asked "should I do X or Y?", you pick a side and explain why. Never "it depends."
+- You use humor naturally — dry observations, not forced jokes. Avoid excessive emojis.
+- You understand Indian context: culture, food, festivals, business dynamics.
+- You match the user's energy: casual when they're casual, grounded when they're serious.
+- You reference context from earlier in the conversation naturally.
+
+HOW TO RESPOND:
+- Short messages ("hi", "what's up") → 1-2 sentences max. No data dumps on greetings.
+- Questions → direct answer first, context if helpful. Lead with the answer, not the preamble.
+- "Help me think through..." or "what should I do?" → multi-paragraph, show your reasoning, be specific.
+- Advice → opinionated. "I'd go with Option A because..." not "both have pros and cons."
+- If you don't know something → say so in one sentence, suggest where to check.
+- NEVER say "How can I assist you?", "Is there anything else?", "Feel free to ask."
+- NEVER start with "Great question!" or "That's interesting!" — just answer.
+
+MOOD AWARENESS:
+- Frustration or stress → acknowledge briefly before helping. Don't be chirpy.
+- Excitement ("I got it!", "guess what") → match their energy.
+- Venting → listen first. "That sounds rough" can be the whole answer.
+- Late night (after 11 PM) → warmer, more casual.
+- Early morning (before 7 AM) → brief and energetic.
+
+EXAMPLES OF GOOD RESPONSES:
+- "hi" → "Evening. Nothing urgent — clear slate tonight." (not a task list)
+- "I'm stressed about placements" → ask what the specific worry is; separate what they can control from what they can't
+- "should I take consulting or strategy elective?" → pick one and give a real reason
+- "explain blockchain" → clear with one good analogy, 3-4 sentences
+- "tell me a joke" → actually try
+
+RESPOND AS PLAIN TEXT. No JSON. No bullet lists unless the content genuinely needs structure.`;
+
+// ── Action prompt core — structured mode (JSON required) ───────────────────
+const ACTION_PROMPT_CORE = `You are ${USER_NAME}'s chief-of-staff. Process this request and respond with a JSON object.
 
 ABOUT THE USER:
 - Name: ${USER_NAME}
 - Timezone: ${USER_TIMEZONE}
-- Personal context comes from LONG-TERM MEMORY below — use it to personalise responses.
-
-PERSONALITY: Max 2-3 sentences unless asked for detail. Proactive — flag overdue tasks, missed habits, overspend. Opinionated and direct. Never say "How can I help?" — just handle it.
+- Personal context from LONG-TERM MEMORY below.
 
 RESPONSE FORMAT (always valid JSON, nothing else): {"reply":"...","actions":[...]}
 
+REPLY QUALITY:
+- Confirm what you did in ONE natural sentence. "Task added: submit report by Friday." Not "I have successfully created a task titled 'submit report' with a deadline of Friday."
+- If there's a relevant implication, add ONE more sentence. "That's your 3rd task due Friday — busy end of week."
+- Sound like a person confirming, not a system announcing. Never exceed 2-3 sentences for confirmations.
+- For questions that don't need actions, answer directly in the reply field with no actions array.
+
 RULES:
-- Confirm actions specifically: "Logged ₹500 travel. You're at ₹X/₹Y budget." Never just "Got it."
-- Answer general knowledge freely. For live data you can't know → say briefly and suggest where to check.
+- Answer general knowledge freely. For live data → say briefly and suggest where to check.
 - BUDGET: mention only when user talks about money. Don't nag.
 - OBSERVATIONS block: surface only if directly relevant to what user just asked.
 - Habits are recurring behaviours — never create_task for a habit.
@@ -63,18 +101,16 @@ RULES:
 - Time-range deletes: today's expenses → period="today"; this week → "this_week"; this month → "this_month".
 - Task time-deletes: completed tasks → period="completed"; today's tasks → "today"; this week → "this_week".
 - "save X to my phone" → save_to_phone (+ create_contact if not already saved in Firestore).
-- send_whatsapp reply just confirms the draft — system appends the link. No raw URLs in reply.${DASHBOARD_URL ? `\n- "my dashboard/website" → ${DASHBOARD_URL}` : ''}
+- send_whatsapp reply confirms the draft — system appends the link. No raw URLs in reply.${DASHBOARD_URL ? `\n- "my dashboard/website" → ${DASHBOARD_URL}` : ''}
 - FOLLOW-UP context present → user answered your question — complete the goal now, don't ask again.
-- WIN_CAPTURE_PENDING: user answered "what are you proud of today?" → emit store_win with their exact words. Don't over-explain.
-- When user shares an accomplishment naturally ("finished X", "proud of Y", "got Y done") → emit store_win.
-
-QUICK CAPTURE (interpret fragments — do NOT ask for clarification on obvious ones):
-- "[number] [item]" → expense: amount=number, guess category, desc=item (e.g. "200 chai" → food/chai)
-- "[habit] done/complete/finished" → complete_habit
-- "call/meet [name] tmrw|tomorrow|[day]" → task with deadline
-- "mtg|meeting [time]" → calendar event today at that time
-- "[name] bday|birthday [date]" → store_memory
-- Abbreviations: tmrw=tomorrow, msg=message, mtg=meeting, assgn=assignment, hw=homework`;
+- WIN_CAPTURE_PENDING: user answered "what are you proud of today?" → emit store_win with their exact words.
+- When user mentions an accomplishment naturally ("finished X", "proud of Y") → emit store_win.
+- QUICK CAPTURE (do NOT ask for clarification on obvious fragments):
+  "[number] [item]" → expense (e.g. "200 chai" → ₹200 food/chai)
+  "[habit] done/complete" → complete_habit
+  "mtg [time]" → calendar event today at that time
+  "[name] bday [date]" → store_memory
+  Abbreviations: tmrw=tomorrow, mtg=meeting, assgn=assignment`;
 
 // Action schemas — only appended when message likely needs an action (~400 tokens)
 const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array — use exact field names):
@@ -132,16 +168,21 @@ const APP_URLS = {
   hotstar: 'https://www.hotstar.com'
 };
 
-// ── Message classification helpers ──────────────────────────────────────────
-const GREETING_RE = /^(hi+|hey+|hello+|sup|yo+|hiya|morning|evening|good\s+(morning|afternoon|evening|night)|thanks|thank\s*you|ty|ok(ay)?|k|great|cool|nice|sure|👋)[\s!.?]*$/i;
+// ── Message classification ──────────────────────────────────────────────────
 
-function isSimpleGreeting(msg) {
-  return GREETING_RE.test(msg.trim()) && msg.trim().length < 25;
-}
-
-function needsActions(msg) {
-  if (/^\d+[\s₹]/.test(msg.trim())) return true; // quick expense capture
-  return /\b(add|create|log|track|remind|save|delete|remove|clear|complete|done|finish|mark|schedule|meeting|mtg|appointment|spend|expense|paid|buy|habit|gym|meditate|task|contact|phone|whatsapp|send|search|news|book|cancel|set|update|call|navigate|directions|text|sms|play|open|timer|win|wins|proud|list|lists|share|grocery|shopping\s+list|bday|birthday)\b/i.test(msg);
+function classifyMessage(msg) {
+  const m = (msg || '').trim();
+  if (!m) return 'conversation';
+  if (/^\d+[\s₹]/.test(m)) return 'action'; // "200 chai" → expense
+  if (/^(add|create|remove|delete|set|save|log|spent|track)\b/i.test(m)) return 'action';
+  if (/^(remind|schedule|plan|book|cancel)\b/i.test(m)) return 'action';
+  if (/^(call|text|send|navigate|play|open)\b/i.test(m)) return 'action';
+  if (/^(done|complete|finish|mark)\b/i.test(m)) return 'action';
+  if (/\b(task|expense|habit|budget|calendar|timer|alarm|list|lists)\b/i.test(m)) return 'action';
+  if (/\b(remind|schedule|todo|to-do|to do|spending|spent|paid|buy|shopping|grocery)\b/i.test(m)) return 'action';
+  if (/\b(whatsapp|contact|phone number|call\s+\w|text\s+\w|navigate to|directions to|play\s+\w|open\s+\w|set.*timer|set.*alarm)\b/i.test(m)) return 'action';
+  if (/\b(news|search for|look up|find out|win|wins|proud|bday|birthday)\b/i.test(m)) return 'action';
+  return 'conversation';
 }
 
 function buildTimeBlock(now) {
@@ -183,31 +224,19 @@ export class ConversationEngine {
   // ── Main entry point ─────────────────────────────────────────────────────
 
   async process(userId, chatId, message) {
+    const mode = classifyMessage(message);
+    if (mode === 'conversation') {
+      return await this.handleConversation(userId, chatId, message);
+    }
+    return await this.handleAction(userId, chatId, message);
+  }
+
+  // ── Action mode — JSON format, full context, structured responses ─────────
+
+  async handleAction(userId, chatId, message) {
     const now = istNow();
     const timeBlock = buildTimeBlock(now);
     const todayStr = now.toISOString().slice(0, 10);
-
-    // ── Greeting fast-path: skip heavy context, answer from memory only ────
-    if (isSimpleGreeting(message)) {
-      const [recentTurns, memories] = await Promise.all([
-        conversationMemory.getRecentTurns(userId),
-        memoryService.getUserMemories(userId)
-      ]);
-      const memBlk = this.selectMemories(memories, message)
-        .map(m => `- ${m.key || m.category}: ${m.value}`).join('\n') || '(none)';
-      const ctx = [timeBlock, `MEMORY:\n${memBlk}`, `USER: ${message}`].join('\n\n');
-      let raw;
-      try {
-        raw = await llm.chat([{ role: 'system', content: SYSTEM_PROMPT_CORE }, ...recentTurns, { role: 'user', content: ctx }], 0.7);
-      } catch (err) {
-        logger.error('Greeting LLM failed', { error: err.message });
-        return "Hey! What's up?";
-      }
-      const parsed = this.parseResponse(raw);
-      await conversationMemory.addTurn(userId, 'user', message);
-      await conversationMemory.addTurn(userId, 'assistant', parsed.reply);
-      return this.cleanReply(parsed.reply, recentTurns.length);
-    }
 
     // ── Determine which optional context sections are needed ───────────────
     const wantsContacts = /contact|whatsapp|message\s+\w|phone|number|vcf|send.*to|\bcall\s+\w|text\s+\w|\bsms\b/i.test(message);
@@ -295,10 +324,8 @@ export class ConversationEngine {
       `USER: ${message}`
     ].filter(Boolean).join('\n\n');
 
-    // ── Select system prompt ───────────────────────────────────────────────
-    const systemPrompt = needsActions(message)
-      ? SYSTEM_PROMPT_CORE + '\n\n' + ACTION_SCHEMAS
-      : SYSTEM_PROMPT_CORE;
+    // ── Assemble action system prompt — always includes schemas ───────────
+    const systemPrompt = ACTION_PROMPT_CORE + '\n\n' + ACTION_SCHEMAS;
 
     const messages = [
       { role: 'system', content: systemPrompt },
@@ -308,9 +335,9 @@ export class ConversationEngine {
 
     let raw;
     try {
-      raw = await llm.chat(messages, 0.6);
+      raw = await llm.chat(messages, 0.3);
     } catch (error) {
-      logger.error('Conversation engine LLM failed', { error: error.message });
+      logger.error('Action LLM failed', { error: error.message });
       return "Something glitched on my end. Try that again?";
     }
 
@@ -342,9 +369,9 @@ export class ConversationEngine {
       try {
         const searchContext = `The user asked: "${message}"\n\nI searched for: "${this._searchQuery}"\n\nSearch results:\n${this._searchResults}\n\nUsing these results, give a concise, direct answer (2-4 sentences). Cite the source URL or name if relevant. If results are insufficient, say so briefly and share what you do know.`;
         const grounded = await llm.call(
-          `You are ${USER_NAME}'s chief-of-staff assistant. Answer their question using the provided search results. Be crisp and direct. Cite sources briefly. No filler.`,
+          `You are ${USER_NAME}'s chief-of-staff. Answer their question using these search results in 2-4 sentences. Cite the source name or URL briefly. No filler.`,
           searchContext,
-          0.4
+          0.3
         );
         if (grounded) parsed.reply = grounded;
       } catch (err) {
@@ -831,6 +858,95 @@ export class ConversationEngine {
            contacts.find(c => c.name.toLowerCase().startsWith(target)) ||
            contacts.find(c => c.name.toLowerCase().includes(target)) ||
            null;
+  }
+
+  // ── Conversation mode helpers ─────────────────────────────────────────────
+
+  getTimeContext() {
+    const now = new Date();
+    const tz = USER_TIMEZONE;
+    const options = { weekday: 'long', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz };
+    const timeStr = now.toLocaleString('en-IN', options);
+    const localHour = parseInt(new Date().toLocaleString('en-IN', { hour: 'numeric', hour12: false, timeZone: tz }), 10);
+    let period = 'morning';
+    if (localHour >= 12 && localHour < 17) period = 'afternoon';
+    else if (localHour >= 17 && localHour < 21) period = 'evening';
+    else if (localHour >= 21 || localHour < 5) period = 'night';
+    return `${timeStr} (${period})`;
+  }
+
+  async getQuickStatus(userId) {
+    try {
+      const tasks = await taskService.getUserTasks(userId, 'pending');
+      const overdue = tasks.filter(t => t.deadline && new Date(t.deadline?.toDate ? t.deadline.toDate() : t.deadline) < new Date());
+      if (!tasks.length) return null;
+      let s = '';
+      if (overdue.length) s += `${overdue.length} overdue. `;
+      s += `${tasks.length} pending.`;
+      return s.trim() || null;
+    } catch { return null; }
+  }
+
+  // ── Conversation mode — free-form, personality-first responses ────────────
+
+  async handleConversation(userId, chatId, message) {
+    const [recentTurns, memories, winPending] = await Promise.all([
+      conversationMemory.getRecentTurns(userId),
+      memoryService.getUserMemories(userId),
+      winsService.getWinPending(userId).catch(() => false)
+    ]);
+
+    // Win capture: user answered the evening "what are you proud of?" prompt
+    let winContext = '';
+    if (winPending && message.trim().length > 3) {
+      try {
+        await winsService.storeWin(userId, message.trim());
+        await winsService.clearWinPending(userId);
+        winContext = `\n\nWIN_JUST_CAPTURED: The user just shared their win: "${message.trim()}". Celebrate it briefly and warmly — one sentence is enough.`;
+      } catch (err) {
+        logger.error('Win capture in conversation mode failed', { error: err.message });
+      }
+    }
+
+    const memBlk = this.selectMemories(memories, message, 6)
+      .map(m => `- ${m.key || m.category}: ${m.value}`).join('\n');
+
+    const quickStatus = await this.getQuickStatus(userId).catch(() => null);
+    const timeCtx = this.getTimeContext();
+
+    const contextMessage = [
+      `Current: ${timeCtx}`,
+      quickStatus ? `Quick status: ${quickStatus}` : null,
+      memBlk ? `About ${USER_NAME}:\n${memBlk}` : null,
+      winContext || null,
+      `Message: ${message}`
+    ].filter(Boolean).join('\n\n');
+
+    const messages = [
+      { role: 'system', content: CONVERSATION_PROMPT },
+      ...recentTurns,
+      { role: 'user', content: contextMessage }
+    ];
+
+    let reply;
+    try {
+      reply = await llm.chat(messages, 0.8);
+    } catch (err) {
+      logger.error('Conversation LLM failed', { error: err.message });
+      return "Something glitched on my end. Try again?";
+    }
+
+    // Strip any JSON leak (LLM sometimes falls back to JSON even with plain text instruction)
+    if (reply?.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(reply.match(/\{[\s\S]*\}/)?.[0]);
+        reply = parsed.reply || reply;
+      } catch { /* use raw reply */ }
+    }
+
+    await conversationMemory.addTurn(userId, 'user', message);
+    await conversationMemory.addTurn(userId, 'assistant', reply || 'Got it.');
+    return this.cleanReply(reply, recentTurns.length);
   }
 }
 
