@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { db } from '../../config/firebase.js';
 import { logger } from '../../utils/logger.js';
 import { extractUserMessage, extractUserId, extractChatId } from '../../utils/validators.js';
@@ -5,9 +6,53 @@ import { telegramService } from './telegramService.js';
 import { commandHandler } from './commandHandler.js';
 import { conversationEngine } from '../ai/conversationEngine.js';
 
+async function downloadTelegramImage(fileId) {
+  const apiBase = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
+  const fileRes = await axios.get(`${apiBase}/getFile`, { params: { file_id: fileId } });
+  const filePath = fileRes.data.result.file_path;
+  const downloadUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${filePath}`;
+  const res = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
+  return Buffer.from(res.data).toString('base64');
+}
+
 export class TelegramHandler {
   async handleUpdate(update) {
     try {
+      // ── Callback queries (inline button taps) ────────────────────────────
+      if (update.callback_query) {
+        const { id: callbackId, from, data } = update.callback_query;
+        const callbackUserId = from.id.toString();
+        const [action, itemId] = (data || '').split(':');
+        try {
+          switch (action) {
+            case 'complete_task': {
+              const { taskService } = await import('../tasks/taskService.js');
+              await taskService.updateStatus(itemId, 'completed');
+              await telegramService.answerCallbackQuery(callbackId, '✅ Task completed!');
+              break;
+            }
+            case 'delete_task': {
+              const { taskService } = await import('../tasks/taskService.js');
+              await taskService.delete(itemId);
+              await telegramService.answerCallbackQuery(callbackId, '🗑️ Task deleted!');
+              break;
+            }
+            case 'complete_habit': {
+              const { habitService } = await import('../habits/habitService.js');
+              await habitService.markComplete(itemId);
+              await telegramService.answerCallbackQuery(callbackId, '✅ Habit marked done!');
+              break;
+            }
+            default:
+              await telegramService.answerCallbackQuery(callbackId, 'Unknown action');
+          }
+        } catch (err) {
+          logger.error('Callback query failed', { action, itemId, error: err.message });
+          await telegramService.answerCallbackQuery(callbackId, 'Action failed');
+        }
+        return { ok: true };
+      }
+
       const userId = extractUserId(update);
       const chatId = extractChatId(update);
 
@@ -61,25 +106,22 @@ export class TelegramHandler {
         await telegramService.sendMessage(chatId, '📸 Analyzing image...');
         try {
           const { visionService } = await import('../ai/visionService.js');
-          const result = await visionService.processPhoto(userId, largest.file_id);
+          const base64 = await downloadTelegramImage(largest.file_id);
+          const result = await visionService.analyzeImage(base64, 'image/jpeg');
           if (!result) {
             await telegramService.sendMessage(chatId, "Image received but I can't analyze images right now.");
           } else if (result.is_receipt) {
-            const { expenseService } = await import('../expenses/expenseService.js');
-            const { budgetService } = await import('../expenses/budgetService.js');
-            await expenseService.create(userId, {
-              amount: result.amount,
-              category: result.category || 'other',
-              description: result.items || '',
-              merchant: result.merchant || 'Unknown'
-            });
-            const warning = await budgetService.checkBudgetWarning(userId, result.category || 'other');
-            let msg = `📸 Receipt detected: Rs.${result.amount} at ${result.merchant || 'Unknown'} (${result.category || 'other'}). Logged.`;
-            if (warning) msg += `\n\n${warning}`;
-            await telegramService.sendMessage(chatId, msg);
+            const amount = result.amount || 0;
+            const category = result.category || 'other';
+            const merchant = result.merchant || 'Unknown';
+            const items = result.items || '';
+            // Let the conversation engine handle expense creation via natural language
+            const syntheticMsg = `Add expense ${amount} ${category} at ${merchant}${items ? ' — ' + items : ''}`;
+            await conversationEngine.process(userId, chatId, syntheticMsg);
+            await telegramService.sendMessage(chatId, `📸 Receipt scanned: ₹${amount} at ${merchant} (${category})`);
           } else {
             const desc = result.description || 'something interesting';
-            await telegramService.sendMessage(chatId, `I see ${desc}. What would you like me to do with this?`);
+            await telegramService.sendMessage(chatId, `I see: ${desc}`);
           }
         } catch (err) {
           logger.error('Photo processing failed', { error: err.message });
@@ -95,7 +137,12 @@ export class TelegramHandler {
         const [command, ...args] = message.split(' ');
         const response = await commandHandler.handle(userId, chatId, command, args);
         if (response !== null && response !== undefined) {
-          await telegramService.sendMessage(chatId, response);
+          // Check if the response includes inline keyboard buttons
+          if (typeof response === 'object' && response.text && response.keyboard) {
+            await telegramService.sendMessageWithInlineKeyboard(chatId, response.text, response.keyboard);
+          } else {
+            await telegramService.sendMessage(chatId, response);
+          }
         }
         return { ok: true };
       }

@@ -1,47 +1,35 @@
-import axios from 'axios';
-import groq from '../../config/groq.js';
+import { config } from 'dotenv';
+config();
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { logger } from '../../utils/logger.js';
 
-const VISION_MODEL = 'llama-3.2-90b-vision-preview';
-
-const RECEIPT_SYSTEM = `You are an expense receipt analyzer. Look at this image and respond ONLY with a JSON object — no other text:
-{"is_receipt":true,"amount":0,"merchant":"","category":"food|travel|shopping|education|health|other","date":"","items":"","description":""}
-If it is NOT a receipt, set is_receipt to false and fill description with a brief one-sentence description of the image.`;
-
-async function downloadFromTelegram(fileId) {
-  const apiBase = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
-  const fileRes = await axios.get(`${apiBase}/getFile`, { params: { file_id: fileId } });
-  const filePath = fileRes.data.result.file_path;
-  const downloadUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${filePath}`;
-  const res = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
-  return Buffer.from(res.data).toString('base64');
-}
+const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 export class VisionService {
-  async processPhoto(userId, fileId) {
+  async analyzeImage(base64Image, mimeType = 'image/jpeg') {
     try {
-      const base64 = await downloadFromTelegram(fileId);
+      const model = gemini.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
+      const result = await model.generateContent([
+        { inlineData: { data: base64Image, mimeType } },
+        { text: `Analyze this image. If it's a receipt or bill, extract:
+- is_receipt: true/false
+- amount: total amount (number only)
+- merchant: store/restaurant name
+- category: food/travel/shopping/education/health/other
+- items: brief list of items
 
-      const completion = await groq.chat.completions.create({
-        model: VISION_MODEL,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
-            { type: 'text', text: RECEIPT_SYSTEM }
-          ]
-        }],
-        temperature: 0.1,
-        max_tokens: 512
-      });
+If it's NOT a receipt, describe what you see briefly.
 
-      const raw = completion.choices[0]?.message?.content || '{}';
-      const match = raw.match(/\{[\s\S]*\}/);
-      if (!match) return { is_receipt: false, description: raw.trim() };
-      return JSON.parse(match[0]);
+Respond ONLY with JSON:
+{"is_receipt": false, "amount": 0, "merchant": "", "category": "", "items": "", "description": ""}` }
+      ]);
+      const text = result.response.text();
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) return JSON.parse(jsonMatch[0]);
+      return { is_receipt: false, description: text };
     } catch (error) {
-      logger.error('Vision analysis failed', { userId, error: error.message });
-      return null;
+      logger.error('Vision analysis failed', { error: error.message });
+      return { is_receipt: false, description: 'Could not analyze image.' };
     }
   }
 }

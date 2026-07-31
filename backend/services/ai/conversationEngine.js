@@ -14,6 +14,7 @@ import { habitService } from '../habits/habitService.js';
 import { contactService } from '../contacts/contactService.js';
 import { telegramService } from '../telegram/telegramService.js';
 import { winsService } from '../wins/winsService.js';
+import { dailySummarizer } from '../memory/dailySummarizer.js';
 
 // ── IST helpers ────────────────────────────────────────────────────────────
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
@@ -368,14 +369,15 @@ export class ConversationEngine {
     }
 
     // ── Always-fresh fetches (conversation state, win flag, conditionals) ───
-    const [recentTurns, memories, pendingSession, contacts, journalLines, activeDoc, winPending] = await Promise.all([
+    const [recentTurns, memories, pendingSession, contacts, journalLines, activeDoc, winPending, recentSummaries] = await Promise.all([
       conversationMemory.getRecentTurns(userId),
       memoryService.getUserMemories(userId),
       this.getSession(userId),
       wantsContacts ? contactService.getUserContacts(userId).catch(() => []) : Promise.resolve([]),
       wantsJournal  ? this.getJournalLines(userId) : Promise.resolve(null),
       wantsDoc      ? this.getActiveDocContext(userId) : Promise.resolve(null),
-      winsService.getWinPending(userId).catch(() => false)
+      winsService.getWinPending(userId).catch(() => false),
+      dailySummarizer.getRecentSummaries(userId).catch(() => [])
     ]);
 
     if (pendingSession) await this.clearSession(userId);
@@ -432,6 +434,11 @@ export class ConversationEngine {
       ? `FOLLOW-UP GOAL: ${pendingSession.waiting_for}\nPartial: ${JSON.stringify(pendingSession.partial || {})}\nUser is answering — complete the goal.`
       : null;
 
+    // ── Recent daily summaries block ──────────────────────────────────────
+    const summaryBlock = recentSummaries && recentSummaries.length
+      ? 'RECENT HISTORY (last 7 days):\n' + recentSummaries.map(s => `- ${s.date}: ${s.summary}`).join('\n')
+      : null;
+
     // ── Assemble context ───────────────────────────────────────────────────
     const contextParts = [
       timeBlock,
@@ -441,6 +448,7 @@ export class ConversationEngine {
       expenseBlock,
       journalLines ? `JOURNAL:\n${journalLines}` : null,
       `MEMORY:\n${memBlk}`,
+      summaryBlock,
       contactBlock,
       activeDoc ? activeDoc.trim() : null,
       observations.length ? `OBSERVATIONS (surface if relevant):\n${observations.join('\n')}` : null,
@@ -1140,10 +1148,11 @@ export class ConversationEngine {
       return { reply: routineResult, quickAction: null, whatsappLink: null };
     }
 
-    const [recentTurns, memories, winPending] = await Promise.all([
+    const [recentTurns, memories, winPending, recentSummariesConv] = await Promise.all([
       conversationMemory.getRecentTurns(userId),
       memoryService.getUserMemories(userId),
-      winsService.getWinPending(userId).catch(() => false)
+      winsService.getWinPending(userId).catch(() => false),
+      dailySummarizer.getRecentSummaries(userId).catch(() => [])
     ]);
 
     // Win capture: user answered the evening "what are you proud of?" prompt
@@ -1164,10 +1173,15 @@ export class ConversationEngine {
     const quickStatus = await this.getQuickStatus(userId).catch(() => null);
     const timeCtx = this.getTimeContext();
 
+    const convSummaryBlock = recentSummariesConv && recentSummariesConv.length
+      ? 'RECENT HISTORY (last 7 days):\n' + recentSummariesConv.map(s => `- ${s.date}: ${s.summary}`).join('\n')
+      : null;
+
     const contextMessage = [
       `Current: ${timeCtx}`,
       quickStatus ? `Quick status: ${quickStatus}` : null,
       memBlk ? `About ${USER_NAME}:\n${memBlk}` : null,
+      convSummaryBlock,
       winContext || null,
       `Message: ${message}`
     ].filter(Boolean).join('\n\n');

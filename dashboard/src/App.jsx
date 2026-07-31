@@ -6,6 +6,7 @@ import Expenses from './pages/Expenses';
 import Habits from './pages/Habits';
 import Memory from './pages/Memory';
 import Voice from './pages/Voice';
+import Admin from './pages/Admin';
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
                 <Route path="/expenses" element={<Expenses />} />
                 <Route path="/habits" element={<Habits />} />
                 <Route path="/memory" element={<Memory />} />
+                <Route path="/admin" element={<Admin />} />
               </Routes>
             </Layout>
           }

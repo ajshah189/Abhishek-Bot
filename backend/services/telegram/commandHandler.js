@@ -102,6 +102,12 @@ export class CommandHandler {
         case 'usage':
           return this.handleUsage();
 
+        case 'patterns':
+          return await this.handlePatterns(userId);
+
+        case 'backup':
+          return await this.handleBackup(userId, chatId);
+
         default:
           return `Unknown command: ${command}. Type /help for available commands.`;
       }
@@ -119,18 +125,25 @@ export class CommandHandler {
     }
 
     let message = `📋 Your Tasks (${tasks.length})\n\n`;
+    const keyboard = [];
     tasks.slice(0, 10).forEach((task, i) => {
       const deadline = task.deadline
         ? (task.deadline.toDate ? task.deadline.toDate() : new Date(task.deadline)).toLocaleDateString()
         : 'No deadline';
       message += `${i + 1}. ${task.title}\n   📅 ${deadline}\n   Priority: ${task.priority}\n\n`;
+      if (task.id) {
+        keyboard.push([
+          { text: `✅ Complete #${i + 1}`, callback_data: `complete_task:${task.id}` },
+          { text: `🗑️ Delete #${i + 1}`, callback_data: `delete_task:${task.id}` }
+        ]);
+      }
     });
 
     if (tasks.length > 10) {
       message += `...and ${tasks.length - 10} more`;
     }
 
-    return message;
+    return keyboard.length ? { text: message, keyboard } : message;
   }
 
   async handleDailyBrief(userId) {
@@ -170,11 +183,18 @@ export class CommandHandler {
     }
 
     let message = `🎯 Your Habits\n\n`;
+    const keyboard = [];
     habits.slice(0, 10).forEach((habit, i) => {
       message += `${i + 1}. ${habit.name}\n   Streak: ${habit.streak} days\n   Frequency: ${habit.frequency}\n\n`;
+      const habitId = habit._docId || habit.id;
+      if (habitId) {
+        keyboard.push([
+          { text: `✅ Done #${i + 1} — ${habit.name}`, callback_data: `complete_habit:${habitId}` }
+        ]);
+      }
     });
 
-    return message;
+    return keyboard.length ? { text: message, keyboard } : message;
   }
 
   async handleExpenses(userId) {
@@ -277,6 +297,7 @@ Lists
 Analytics
 /weekly - Weekly report
 /weeklyreport - On-demand weekly reflection
+/patterns - Discovered behavior patterns
 
 Search & News
 /search <query> - Search all data
@@ -293,6 +314,7 @@ Utilities
 /clear - Reset conversation memory
 /settings - Manage settings
 /usage - Token usage today (API budget)
+/backup - Export all your data as JSON
 
 Quick capture (no slash needed):
   "200 chai" → log expense
@@ -621,6 +643,21 @@ Contact must be saved for calling/texting. Say "save [name]'s number [number]" f
       logger.error('handleDisconnectCalendar failed', { error: err.message });
       return 'Could not disconnect. Try again.';
     }
+  }
+
+  async handlePatterns(userId) {
+    const { memoryService } = await import('../memory/memoryService.js');
+    const memories = await memoryService.getUserMemories(userId);
+    const patterns = memories.filter(m => m.category === 'pattern');
+    if (!patterns.length) return '📊 No patterns discovered yet. Patterns are analyzed weekly after enough data accumulates.';
+    let msg = '📊 *Discovered Patterns*\n\n';
+    patterns.forEach((p, i) => { msg += `${i + 1}. ${p.value}\n\n`; });
+    return msg;
+  }
+
+  async handleBackup(userId, chatId) {
+    const { backupService } = await import('../backup/backupService.js');
+    return await backupService.sendBackupToUser(userId, chatId);
   }
 
   handleSettings() {

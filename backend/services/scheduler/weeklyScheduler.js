@@ -48,6 +48,13 @@ export class WeeklyScheduler {
 
       this.weeklySchedules.set(key, setTimeout(async () => {
         await analyticsService.generateWeeklyReport(userId, chatId);
+        // Run pattern analysis after the weekly report
+        try {
+          const { patternAnalyzer } = await import('../analytics/patternAnalyzer.js');
+          await patternAnalyzer.analyzePatterns(userId);
+        } catch (err) {
+          logger.error('Pattern analysis after weekly report failed', { userId, error: err.message });
+        }
         scheduleNextReport();
       }, delay));
 

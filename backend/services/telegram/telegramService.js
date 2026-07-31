@@ -2,20 +2,36 @@ import axios from 'axios';
 import { getTelegramApiUrl } from '../../config/telegram.js';
 import { logger } from '../../utils/logger.js';
 
-export class TelegramService {
-  async sendMessage(chatId, text) {
-    try {
-      const response = await axios.post(getTelegramApiUrl('sendMessage'), {
-        chat_id: chatId,
-        text,
-        parse_mode: 'Markdown'
-      });
+function escapeMarkdownV2(text) {
+  if (!text) return '';
+  return String(text).replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
+}
 
-      logger.info('Message sent', { chatId, messageLength: text.length });
-      return response.data;
+function formatMarkdownV2(text) {
+  if (!text) return '';
+  return escapeMarkdownV2(text);
+}
+
+export class TelegramService {
+  async sendMessage(chatId, text, options = {}) {
+    try {
+      return await axios.post(getTelegramApiUrl('sendMessage'), {
+        chat_id: chatId,
+        text: formatMarkdownV2(text),
+        parse_mode: 'MarkdownV2',
+        ...options
+      });
     } catch (error) {
-      logger.error('Failed to send message', { error: error.message, chatId });
-      throw error;
+      // Fallback to plain text if MarkdownV2 formatting fails
+      try {
+        return await axios.post(getTelegramApiUrl('sendMessage'), {
+          chat_id: chatId,
+          text,
+          ...options
+        });
+      } catch (e) {
+        logger.error('sendMessage failed', { chatId, error: e.message });
+      }
     }
   }
 
@@ -30,7 +46,47 @@ export class TelegramService {
       });
       return response.data;
     } catch (error) {
-      logger.error('Failed to send message with button', { error: error.message, chatId });
+      try {
+        const response = await axios.post(getTelegramApiUrl('sendMessage'), {
+          chat_id: chatId,
+          text,
+          reply_markup: {
+            inline_keyboard: [[{ text: buttonText, url: buttonUrl }]]
+          }
+        });
+        return response.data;
+      } catch (e) {
+        logger.error('Failed to send message with button', { error: e.message, chatId });
+      }
+    }
+  }
+
+  async sendMessageWithInlineKeyboard(chatId, text, keyboard) {
+    try {
+      return await axios.post(getTelegramApiUrl('sendMessage'), {
+        chat_id: chatId,
+        text: formatMarkdownV2(text),
+        parse_mode: 'MarkdownV2',
+        reply_markup: { inline_keyboard: keyboard }
+      });
+    } catch {
+      return await axios.post(getTelegramApiUrl('sendMessage'), {
+        chat_id: chatId,
+        text,
+        reply_markup: { inline_keyboard: keyboard }
+      });
+    }
+  }
+
+  async answerCallbackQuery(callbackQueryId, text = '', showAlert = false) {
+    try {
+      return await axios.post(getTelegramApiUrl('answerCallbackQuery'), {
+        callback_query_id: callbackQueryId,
+        text,
+        show_alert: showAlert
+      });
+    } catch (error) {
+      logger.error('Failed to answer callback', { error: error.message });
       throw error;
     }
   }
@@ -78,19 +134,6 @@ export class TelegramService {
       return response.data;
     } catch (error) {
       logger.error('Failed to send VCF', { error: error.message, chatId });
-      throw error;
-    }
-  }
-
-  async answerCallbackQuery(callbackQueryId, text = '', showAlert = false) {
-    try {
-      return await axios.post(getTelegramApiUrl('answerCallbackQuery'), {
-        callback_query_id: callbackQueryId,
-        text,
-        show_alert: showAlert
-      });
-    } catch (error) {
-      logger.error('Failed to answer callback', { error: error.message });
       throw error;
     }
   }

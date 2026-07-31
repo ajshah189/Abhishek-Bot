@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, CheckSquare, DollarSign,
-  Target, Brain, Menu, Mic
+  Target, Brain, Menu, Mic, BarChart2
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -12,6 +12,7 @@ const NAV = [
   { to: '/habits', icon: Target, label: 'Habits' },
   { to: '/memory', icon: Brain, label: 'Memory' },
   { to: '/voice', icon: Mic, label: 'Voice' },
+  { to: '/admin', icon: BarChart2, label: 'Admin' },
 ];
 
 const linkClass = ({ isActive }) =>

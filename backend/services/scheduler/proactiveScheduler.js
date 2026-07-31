@@ -21,6 +21,31 @@ export class ProactiveScheduler {
           logger.error('Failed to schedule user', { userId: doc.id, error: err.message });
         }
       }
+
+      // ── Daily backup at 11:55 PM IST for owner ──────────────────────────
+      const backupJob = cron.schedule('55 23 * * *', async () => {
+        try {
+          const { backupService } = await import('../backup/backupService.js');
+          const ownerId = process.env.OWNER_TELEGRAM_ID;
+          if (ownerId) await backupService.createBackup(ownerId);
+        } catch (err) {
+          logger.error('Nightly backup error', { error: err.message });
+        }
+      }, { timezone: 'Asia/Kolkata' });
+      this.jobs.push(backupJob);
+
+      // ── Daily summary at 11:59 PM IST for owner ─────────────────────────
+      const summaryJob = cron.schedule('59 23 * * *', async () => {
+        try {
+          const { dailySummarizer } = await import('../memory/dailySummarizer.js');
+          const ownerId = process.env.OWNER_TELEGRAM_ID;
+          if (ownerId) await dailySummarizer.summarizeDay(ownerId);
+        } catch (err) {
+          logger.error('Daily summary error', { error: err.message });
+        }
+      }, { timezone: 'Asia/Kolkata' });
+      this.jobs.push(summaryJob);
+
       logger.info('Proactive scheduler started', { users: snap.size });
     } catch (err) {
       logger.error('Proactive scheduler init failed', { error: err.message });
