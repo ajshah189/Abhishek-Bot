@@ -130,7 +130,7 @@ function classifyMessage(msg) {
   if (/\b(task|expense|habit|budget|calendar|timer|alarm|list|lists)\b/i.test(m)) return 'action';
   if (/\b(remind|schedule|todo|to-do|to do|spending|spent|paid|buy|shopping|grocery)\b/i.test(m)) return 'action';
   if (/\b(spent|paid|bought|cost)\s+\d/i.test(m)) return 'action'; // "spent 300", "paid 500"
-  if (/\b(whatsapp|contact|phone number|call\s+\w|text\s+\w|navigate to|directions to|play\s+\w|open\s+\w|set.*timer|set.*alarm)\b/i.test(m)) return 'action';
+  if (/\b(whatsapp|contact|phone number|call\s+\w|text\s+\w|navigate|directions to|take me to|drive to|play\s+\w|open\s+\w|set.*timer|set.*alarm)\b/i.test(m)) return 'action';
   if (/\b(news|search for|look up|find out|win|wins|proud|bday|birthday)\b/i.test(m)) return 'action';
   return 'conversation';
 }
@@ -238,11 +238,18 @@ export class ConversationEngine {
       }
     }
 
-    // "navigate to [place]" or "directions to [place]" or "go to [place]"
-    const navMatch = msg.match(/^(?:navigate|directions|go)\s+(?:to\s+)?(.+)/i);
+    // "navigate [me] to [place]", "directions to", "go to", "take me to", "drive to"
+    const navMatch = msg.match(/^(?:navigate|directions|go|take\s+me|drive)\s+(?:me\s+)?(?:to\s+)?(.+)/i);
     if (navMatch) {
       const dest = encodeURIComponent(navMatch[1].trim());
       return { reply: `Opening directions to ${navMatch[1].trim()}`, quickAction: { label: `🗺️ Navigate to ${navMatch[1].trim()}`, url: `https://www.google.com/maps/dir/?api=1&destination=${dest}` }, whatsappLink: null };
+    }
+
+    // Hindi navigation: "ले चल [destination]", "रास्ता बता [destination]", etc.
+    const hindiNavMatch = message.match(/(?:नेविगेट|ले\s*चल|रास्ता\s*बता|चल)\s+(?:मुझे\s+|मी\s+)?(?:टू\s+|तू\s+)?(.+)/i);
+    if (hindiNavMatch) {
+      const dest = encodeURIComponent(hindiNavMatch[1].trim());
+      return { reply: `Opening directions`, quickAction: { label: `🗺️ Navigate`, url: `https://www.google.com/maps/dir/?api=1&destination=${dest}` }, whatsappLink: null };
     }
 
     // "play [music]"
