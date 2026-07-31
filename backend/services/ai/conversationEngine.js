@@ -12,6 +12,7 @@ import { expenseService } from '../expenses/expenseService.js';
 import { habitService } from '../habits/habitService.js';
 import { contactService } from '../contacts/contactService.js';
 import { telegramService } from '../telegram/telegramService.js';
+import { winsService } from '../wins/winsService.js';
 
 // ── IST helpers ────────────────────────────────────────────────────────────
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
@@ -63,7 +64,17 @@ RULES:
 - Task time-deletes: completed tasks → period="completed"; today's tasks → "today"; this week → "this_week".
 - "save X to my phone" → save_to_phone (+ create_contact if not already saved in Firestore).
 - send_whatsapp reply just confirms the draft — system appends the link. No raw URLs in reply.${DASHBOARD_URL ? `\n- "my dashboard/website" → ${DASHBOARD_URL}` : ''}
-- FOLLOW-UP context present → user answered your question — complete the goal now, don't ask again.`;
+- FOLLOW-UP context present → user answered your question — complete the goal now, don't ask again.
+- WIN_CAPTURE_PENDING: user answered "what are you proud of today?" → emit store_win with their exact words. Don't over-explain.
+- When user shares an accomplishment naturally ("finished X", "proud of Y", "got Y done") → emit store_win.
+
+QUICK CAPTURE (interpret fragments — do NOT ask for clarification on obvious ones):
+- "[number] [item]" → expense: amount=number, guess category, desc=item (e.g. "200 chai" → food/chai)
+- "[habit] done/complete/finished" → complete_habit
+- "call/meet [name] tmrw|tomorrow|[day]" → task with deadline
+- "mtg|meeting [time]" → calendar event today at that time
+- "[name] bday|birthday [date]" → store_memory
+- Abbreviations: tmrw=tomorrow, msg=message, mtg=meeting, assgn=assignment, hw=homework`;
 
 // Action schemas — only appended when message likely needs an action (~400 tokens)
 const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array — use exact field names):
@@ -84,6 +95,8 @@ const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array — use exact field nam
 {"type":"web_open","url_or_query":"..."} — "open [app]", "open [site]". Known apps open directly; others fall back to Google search.
 {"type":"set_timer","minutes":5,"label":"..."} — "set a [N] minute timer". Generates a Google timer link.
 {"type":"web_search","query":"3-6 word query"} — use for: news, live prices/scores, current events, facts you're uncertain of. NOT for: general concepts, personal data already in context. Placeholder reply: "Let me check that for you." Then cite sources.
+{"type":"store_win","text":"..."} — user shared something they're proud of; store verbatim.
+{"type":"create_list","name":"..."} | {"type":"add_to_list","list_name":"...","item":"..."} | {"type":"remove_from_list","list_name":"...","item":"..."} | {"type":"show_list","list_name":"..."} | {"type":"share_list","list_name":"...","share_with":"telegram_user_id"}
 {"type":"ask_followup","waiting_for":"label","partial":{}}
 
 PHONE ACTION EXAMPLES:
@@ -127,7 +140,8 @@ function isSimpleGreeting(msg) {
 }
 
 function needsActions(msg) {
-  return /\b(add|create|log|track|remind|save|delete|remove|clear|complete|done|finish|mark|schedule|meeting|appointment|spend|expense|paid|buy|habit|gym|meditate|task|contact|phone|whatsapp|send|search|news|book|cancel|set|update|call|navigate|directions|text|sms|play|open|timer)\b/i.test(msg);
+  if (/^\d+[\s₹]/.test(msg.trim())) return true; // quick expense capture
+  return /\b(add|create|log|track|remind|save|delete|remove|clear|complete|done|finish|mark|schedule|meeting|mtg|appointment|spend|expense|paid|buy|habit|gym|meditate|task|contact|phone|whatsapp|send|search|news|book|cancel|set|update|call|navigate|directions|text|sms|play|open|timer|win|wins|proud|list|lists|share|grocery|shopping\s+list|bday|birthday)\b/i.test(msg);
 }
 
 function buildTimeBlock(now) {
@@ -202,7 +216,8 @@ export class ConversationEngine {
 
     // ── Parallel fetch — skip optional sections when not needed ────────────
     const [recentTurns, memories, tasks, habits, pendingSession,
-           calendarContext, expenseSummary, budgets, contacts, journalLines, activeDoc] = await Promise.all([
+           calendarContext, expenseSummary, budgets, contacts, journalLines, activeDoc,
+           winPending] = await Promise.all([
       conversationMemory.getRecentTurns(userId),
       memoryService.getUserMemories(userId),
       taskService.getUserTasks(userId, 'pending'),
@@ -213,7 +228,8 @@ export class ConversationEngine {
       this.getBudgets(userId),
       wantsContacts ? contactService.getUserContacts(userId).catch(() => []) : Promise.resolve([]),
       wantsJournal  ? this.getJournalLines(userId) : Promise.resolve(null),
-      wantsDoc      ? this.getActiveDocContext(userId) : Promise.resolve(null)
+      wantsDoc      ? this.getActiveDocContext(userId) : Promise.resolve(null),
+      winsService.getWinPending(userId).catch(() => false)
     ]);
 
     if (pendingSession) await this.clearSession(userId);
@@ -275,6 +291,7 @@ export class ConversationEngine {
       activeDoc ? activeDoc.trim() : null,
       observations.length ? `OBSERVATIONS (surface if relevant):\n${observations.join('\n')}` : null,
       sessionBlock,
+      winPending ? 'WIN_CAPTURE_PENDING: user is answering "what are you proud of today?" — store their reply as a win.' : null,
       `USER: ${message}`
     ].filter(Boolean).join('\n\n');
 
@@ -306,7 +323,19 @@ export class ConversationEngine {
     this._searchQuery = null;
     this._vcfContact = null;
     this._quickAction = null;
+    this._listContent = null;
     await this.executeActions(userId, parsed.actions, tasks, habits, contacts);
+
+    // ── Win capture: clear pending flag once captured ──────────────────────
+    if (winPending && parsed.actions?.some(a => a.type === 'store_win')) {
+      winsService.clearWinPending(userId).catch(() => {});
+    }
+
+    // ── List display: override reply with formatted list ───────────────────
+    if (this._listContent) {
+      parsed.reply = this._listContent;
+      this._listContent = null;
+    }
 
     // ── Second LLM call: synthesise search results ─────────────────────────
     if (this._searchResults) {
@@ -631,6 +660,39 @@ export class ConversationEngine {
               logger.error('web_search action failed', { error: err.message });
               this._searchResults = null;
             }
+            break;
+          }
+          case 'store_win': {
+            if (action.text?.trim()) {
+              await winsService.storeWin(userId, action.text.trim());
+            }
+            break;
+          }
+          case 'create_list': {
+            const { sharedListService } = await import('../lists/sharedListService.js');
+            const list = await sharedListService.createList(userId, action.name || 'My List');
+            logger.info('List created via action', { userId, name: list.name });
+            break;
+          }
+          case 'add_to_list': {
+            const { sharedListService } = await import('../lists/sharedListService.js');
+            await sharedListService.addItem(userId, action.list_name || '', action.item || '');
+            break;
+          }
+          case 'remove_from_list': {
+            const { sharedListService } = await import('../lists/sharedListService.js');
+            await sharedListService.removeItem(userId, action.list_name || '', action.item || '');
+            break;
+          }
+          case 'show_list': {
+            const { sharedListService } = await import('../lists/sharedListService.js');
+            const list = await sharedListService.findList(userId, action.list_name || '');
+            this._listContent = sharedListService.formatList(list);
+            break;
+          }
+          case 'share_list': {
+            const { sharedListService } = await import('../lists/sharedListService.js');
+            await sharedListService.shareList(userId, action.list_name || '', action.share_with || '');
             break;
           }
           default:

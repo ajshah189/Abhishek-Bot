@@ -1,19 +1,23 @@
 import { taskService } from '../tasks/taskService.js';
 import { habitService } from '../habits/habitService.js';
 import { expenseService } from '../expenses/expenseService.js';
+import { winsService } from '../wins/winsService.js';
 import { llm } from '../ai/llmAdapter.js';
 import { telegramService } from '../telegram/telegramService.js';
 import { logger } from '../../utils/logger.js';
+
+const USER_NAME = process.env.USER_NAME || 'User';
 
 export class PlannerService {
   // ── Proactive sends (called by proactiveScheduler) ─────────────────────
 
   async sendMorningBrief(userId, chatId) {
     const today = new Date();
-    const [tasks, habits, expenseSummary] = await Promise.all([
+    const [tasks, habits, expenseSummary, weeklyWins] = await Promise.all([
       taskService.getUserTasks(userId, 'pending'),
       habitService.getUserHabits(userId),
-      expenseService.getMonthlySummary(userId)
+      expenseService.getMonthlySummary(userId),
+      winsService.getWeeklyWinCount(userId).catch(() => 0)
     ]);
 
     const todayTasks = tasks.filter(t => this.isToday(t.deadline));
@@ -27,8 +31,10 @@ export class PlannerService {
     const habitLines = habits.map(h => `- ${h.name} (streak: ${h.streak})`).join('\n') || 'No habits';
     const expenseLines = Object.entries(expenseSummary).map(([c, a]) => `${c}: ₹${a}`).join(', ') || '₹0';
 
+    const winsNote = weeklyWins >= 3 ? `\nWeekly wins so far: ${weeklyWins} — mention this to celebrate momentum.` : '';
+
     const brief = await llm.call(
-      `You are Abhishek's personal chief-of-staff. Write a crisp 3–5 sentence morning brief. Be direct and motivating — no filler. Highlight today's most important tasks, any overdue items, habit streaks to keep alive, and spending if notable. End with one punchy line. Use Telegram Markdown (*bold*).`,
+      `You are ${USER_NAME}'s personal chief-of-staff. Write a crisp 3–5 sentence morning brief. Be direct and motivating — no filler. Highlight today's most important tasks, any overdue items, habit streaks to keep alive, and spending if notable. End with one punchy line. Use Telegram Markdown (*bold*).`,
       `Today: ${today.toDateString()}
 Pending tasks (${tasks.length} total, ${todayTasks.length} due today, ${overdueTasks.length} overdue):
 ${taskLines}
@@ -36,11 +42,11 @@ ${taskLines}
 Habits:
 ${habitLines}
 
-Month spend: ${expenseLines} (total ₹${totalSpend.toFixed(0)})`,
+Month spend: ${expenseLines} (total ₹${totalSpend.toFixed(0)})${winsNote}`,
       0.7
     );
 
-    await telegramService.sendMessage(chatId, `🌅 *Good morning, Abhishek!*\n\n${brief}`);
+    await telegramService.sendMessage(chatId, `🌅 *Good morning!*\n\n${brief}`);
     logger.info('Morning brief sent', { userId });
   }
 
@@ -67,7 +73,7 @@ Month spend: ${expenseLines} (total ₹${totalSpend.toFixed(0)})`,
     const habitLines = habits.map(h => `- ${h.name}: ${h.streak} day streak`).join('\n') || 'No habits tracked';
 
     const review = await llm.call(
-      `You are Abhishek's personal chief-of-staff. Write a crisp 4–6 sentence evening review. Celebrate wins, acknowledge pending tasks without guilt, mention today's habits, and end with a journal prompt: "How was your day?" Use Telegram Markdown (*bold*).`,
+      `You are ${USER_NAME}'s personal chief-of-staff. Write a crisp 4–6 sentence evening review. Celebrate wins, acknowledge pending tasks without guilt, mention today's habits. End with exactly this line: "What's one thing you're proud of today?" Use Telegram Markdown (*bold*).`,
       `Completed today:
 ${completedLines}
 
@@ -82,6 +88,11 @@ Monthly spending: ₹${totalSpend.toFixed(0)}`,
     );
 
     await telegramService.sendMessage(chatId, `📊 *Evening Review*\n\n${review}`);
+
+    // Set win capture window — next message within 10 minutes gets stored as a win
+    await winsService.setWinPending(userId).catch(err =>
+      logger.error('setWinPending failed', { error: err.message })
+    );
     logger.info('Evening review sent', { userId });
   }
 

@@ -28,10 +28,12 @@ export class ReminderPoller {
   }
 
   async tick() {
-    // Run both checks in parallel; each has its own try/catch
+    // Run all checks in parallel; each has its own try/catch
+    const { staleTaskChecker } = await import('../tasks/staleTaskChecker.js');
     await Promise.all([
       this.checkAndSendReminders(),
-      this.nudgeUpcomingDeadlines()
+      this.nudgeUpcomingDeadlines(),
+      staleTaskChecker.check()
     ]);
   }
 

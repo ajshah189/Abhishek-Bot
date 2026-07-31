@@ -4,6 +4,8 @@ import { habitService } from '../habits/habitService.js';
 import { plannerService } from '../planner/plannerService.js';
 import { searchService } from '../search/searchService.js';
 import { analyticsService } from '../analytics/analyticsService.js';
+import { winsService } from '../wins/winsService.js';
+import { sharedListService } from '../lists/sharedListService.js';
 import { logger } from '../../utils/logger.js';
 import { telegramService } from './telegramService.js';
 import { db } from '../../config/firebase.js';
@@ -75,6 +77,18 @@ export class CommandHandler {
 
         case 'news':
           return await this.handleNews(userId, chatId, args);
+
+        case 'wins':
+          return await this.handleWins(userId, args);
+
+        case 'weeklyreport':
+          return await this.handleWeeklyReport(userId, chatId);
+
+        case 'lists':
+          return await this.handleLists(userId);
+
+        case 'list':
+          return await this.handleList(userId, args);
 
         case 'settings':
           return this.handleSettings();
@@ -216,52 +230,58 @@ export class CommandHandler {
   }
 
   handleHelp() {
-    return `Abhishek Assistant - Commands
+    return `Assistant — Commands
 
 Daily
 /today - Combined day view (calendar + tasks + habits + spend)
 /daily - Morning brief
 /evening - Evening review
 
-Tasks
+Tasks & Habits
 /tasks - Show pending tasks
+/habits - Show all habits
+/streaks - Habit streak tracker
+/cleanhabits - Remove duplicate habits
 
 Expenses
 /expenses - Monthly summary
 /budget [category amount] - View or set budgets
 
-Habits
-/habits - Show all habits
-/streaks - Habit streak tracker
-/cleanhabits - Remove duplicate habits
-
 Calendar
 /connectcalendar - Link Google Calendar
-/disconnectcalendar - Unlink Google Calendar
 /calendar - Today's schedule
 /upcoming - Next 10 events
 
+Wins
+/wins - Last 30 days of daily wins
+/wins week - This week's wins
+
+Lists
+/lists - Show all your lists
+/list [name] - View a specific list
+
 Analytics
 /weekly - Weekly report
+/weeklyreport - On-demand weekly reflection
 
-Search
+Search & News
 /search <query> - Search all data
 /news [topic] - Latest news headlines
 
 Contacts
-/savecontact [name] - Send saved contact as .vcf to add to phone
-/apps - List all quick phone actions (call, SMS, maps, music, timer)
+/savecontact [name] - Send contact as .vcf
+/apps - Phone shortcuts (call, SMS, maps, music, timer)
 
 Utilities
 /clear - Reset conversation memory
 /settings - Manage settings
 
-Just type naturally:
-- "Meeting with Riya tomorrow at 4pm"
-- "Spent 450 on dinner"
-- "Remember I like Jain food"
-- Upload a PDF to summarize and ask questions
-- Send a photo of a receipt to auto-log it`;
+Quick capture (no slash needed):
+  "200 chai" → log expense
+  "gym done" → mark habit
+  "mtg 3pm" → calendar event
+  "create grocery list" → new list
+  "add milk to grocery" → add to list`;
   }
 
   async handleConnectCalendar(userId, chatId) {
@@ -398,7 +418,7 @@ Just type naturally:
     const totalSpend = Object.values(expenseSummary).reduce((s, v) => s + v, 0);
     const spendBlock = totalSpend > 0 ? `Rs.${Math.round(totalSpend)} spent this month` : 'no expenses logged this month';
 
-    const dataPrompt = `Today's data for Abhishek:
+    const dataPrompt = `Today's data for ${process.env.USER_NAME || 'User'}:
 Calendar: ${calendarBlock}
 Tasks: ${taskBlock}
 Habits: ${habitBlock}
@@ -466,6 +486,51 @@ Contact must be saved for calling/texting. Say "save [name]'s number [number]" f
     } catch (err) {
       logger.error('handleNews failed', { error: err.message });
       return '❌ Could not fetch news right now. Try again.';
+    }
+  }
+
+  async handleWins(userId, args) {
+    try {
+      const isWeek = (args[0] || '').toLowerCase() === 'week';
+      const days = isWeek ? 7 : 30;
+      const wins = await winsService.getWins(userId, days);
+      const header = isWeek ? '🏆 *Wins This Week*' : '🏆 *Wins — Last 30 Days*';
+      if (!wins.length) return `${header}\n\nNo wins logged yet. Evening review will ask "What's one thing you're proud of today?" — share it there!`;
+      return `${header}\n\n${winsService.formatWinsTimeline(wins)}`;
+    } catch (err) {
+      logger.error('handleWins failed', { error: err.message });
+      return '❌ Could not fetch wins. Try again.';
+    }
+  }
+
+  async handleLists(userId) {
+    try {
+      const lists = await sharedListService.getUserLists(userId);
+      if (!lists.length) return '📋 No lists yet. Say "create a grocery list" to start.';
+      let msg = '📋 *Your Lists*\n\n';
+      lists.forEach(l => {
+        const pending = (l.items || []).filter(i => !i.done).length;
+        const shared  = l.ownerUserId !== userId.toString() ? ' (shared)' : '';
+        msg += `• *${l.displayName}*${shared} — ${pending} item${pending !== 1 ? 's' : ''}\n`;
+      });
+      msg += '\nView a list with /list [name]';
+      return msg;
+    } catch (err) {
+      logger.error('handleLists failed', { error: err.message });
+      return '❌ Could not fetch lists. Try again.';
+    }
+  }
+
+  async handleList(userId, args) {
+    if (!args.length) return '📋 Usage: /list [name]\nExample: /list grocery';
+    try {
+      const name = args.join(' ');
+      const list = await sharedListService.findList(userId, name);
+      if (!list) return `No list named "${name}" found. Say "create a ${name} list" to make one.`;
+      return sharedListService.formatList(list);
+    } catch (err) {
+      logger.error('handleList failed', { error: err.message });
+      return '❌ Could not fetch list. Try again.';
     }
   }
 
