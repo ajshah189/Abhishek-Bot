@@ -18,6 +18,10 @@ function checkRateLimit() {
   return true;
 }
 
+function stripHtml(str) {
+  return (str || '').replace(/<[^>]*>/g, '').trim();
+}
+
 // ── DDG Instant Answer API — always available, no key needed ────────────────
 async function instantAnswers(query) {
   const url = 'https://api.duckduckgo.com/';
@@ -29,14 +33,15 @@ async function instantAnswers(query) {
   const results = [];
 
   if (d.Abstract) {
-    results.push({ title: d.Heading || query, snippet: d.Abstract, url: d.AbstractURL || d.AbstractSource || '' });
+    results.push({ title: stripHtml(d.Heading || query), snippet: stripHtml(d.Abstract), url: d.AbstractURL || d.AbstractSource || '' });
   }
   if (d.Answer) {
-    results.push({ title: 'Direct answer', snippet: d.Answer, url: '' });
+    results.push({ title: 'Direct answer', snippet: stripHtml(d.Answer), url: '' });
   }
   (d.RelatedTopics || []).slice(0, 4).forEach(t => {
     if (t.Text && t.FirstURL) {
-      results.push({ title: t.Text.slice(0, 80), snippet: t.Text, url: t.FirstURL });
+      const clean = stripHtml(t.Text);
+      results.push({ title: clean.slice(0, 80), snippet: clean, url: t.FirstURL });
     }
   });
   return results;
@@ -48,8 +53,8 @@ async function scraperSearch(query, maxResults) {
   const res = await DDG.search(query, { safeSearch: DDG.SafeSearchType.MODERATE });
   if (!res?.results?.length) return [];
   return res.results.slice(0, maxResults).map(r => ({
-    title: r.title || '',
-    snippet: r.description || '',
+    title: stripHtml(r.title),
+    snippet: stripHtml(r.description),
     url: r.url || ''
   }));
 }
@@ -60,8 +65,8 @@ async function scraperNews(query, maxResults) {
   const res = await DDG.searchNews(query, { safeSearch: DDG.SafeSearchType.MODERATE });
   if (!res?.results?.length) return [];
   return res.results.slice(0, maxResults).map(r => ({
-    title: r.title || '',
-    snippet: r.excerpt || r.description || '',
+    title: stripHtml(r.title),
+    snippet: stripHtml(r.excerpt || r.description),
     url: r.url || '',
     source: r.source || ''
   }));
