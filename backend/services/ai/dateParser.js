@@ -76,7 +76,9 @@ export function parseDate(text, referenceDate = new Date()) {
 
 export function formatDate(date) {
   if (!date) return null;
-  const d = new Date(date);
+  // Handle Firestore Timestamps (have .toDate()) as well as plain Date/string/number
+  const d = date?.toDate ? date.toDate() : new Date(date);
+  if (isNaN(d)) return null;
   return d.toLocaleString('en-IN', {
     weekday: 'short',
     day: 'numeric',

@@ -122,12 +122,14 @@ function classifyMessage(msg) {
   const m = (msg || '').trim();
   if (!m) return 'conversation';
   if (/^\d+[\s₹]/.test(m)) return 'action'; // "200 chai" → expense
+  if (/\d+\s*rs\b/i.test(m)) return 'action'; // "food 300rs", "300rs", "300 rs"
   if (/^(add|create|remove|delete|set|save|log|spent|track)\b/i.test(m)) return 'action';
   if (/^(remind|schedule|plan|book|cancel)\b/i.test(m)) return 'action';
   if (/^(call|text|send|navigate|play|open)\b/i.test(m)) return 'action';
   if (/^(done|complete|finish|mark)\b/i.test(m)) return 'action';
   if (/\b(task|expense|habit|budget|calendar|timer|alarm|list|lists)\b/i.test(m)) return 'action';
   if (/\b(remind|schedule|todo|to-do|to do|spending|spent|paid|buy|shopping|grocery)\b/i.test(m)) return 'action';
+  if (/\b(spent|paid|bought|cost)\s+\d/i.test(m)) return 'action'; // "spent 300", "paid 500"
   if (/\b(whatsapp|contact|phone number|call\s+\w|text\s+\w|navigate to|directions to|play\s+\w|open\s+\w|set.*timer|set.*alarm)\b/i.test(m)) return 'action';
   if (/\b(news|search for|look up|find out|win|wins|proud|bday|birthday)\b/i.test(m)) return 'action';
   return 'conversation';
@@ -251,8 +253,10 @@ export class ConversationEngine {
     }
 
     // "message/tell/whatsapp [name] [text]" or "message [name] on whatsapp [text]"
+    // Also handles bare "whatsapp [name] [message]" where "whatsapp" is the verb
     const waMatch = message.match(/^(?:message|tell|whatsapp|send)\s+(.+?)\s+(?:on\s+whatsapp\s*,?\s*|saying\s+)(.+)/i) ||
-                    message.match(/^(?:message|tell|whatsapp|send)\s+(.+?)\s+on\s+whatsapp$/i);
+                    message.match(/^(?:message|tell|whatsapp|send)\s+(.+?)\s+on\s+whatsapp$/i) ||
+                    (/^whatsapp\s+/i.test(message) && message.match(/^whatsapp\s+(\S+)\s+(.+)/i));
     if (waMatch) {
       const contactName = waMatch[1].replace(/\s+on$/i, '').trim();
       const messageText = waMatch[2]?.trim() || '';
@@ -278,8 +282,9 @@ export class ConversationEngine {
       return { reply: `${num}-${isSeconds ? 'second' : 'minute'} timer`, quickAction: { label, url: `https://www.google.com/search?q=${encodeURIComponent(query)}` }, whatsappLink: null };
     }
 
-    // "save [name]'s number [number]"
-    const saveMatch = message.match(/^save\s+(.+?)(?:'s)?\s+(?:number|phone|contact)\s+(\d[\d\s\-+]+)/i);
+    // "save [name]'s number [number]" or "save contact [name] [number]"
+    const saveMatch = message.match(/^save\s+(.+?)(?:'s)?\s+(?:number|phone|contact)\s+(\d[\d\s\-+]+)/i) ||
+                      message.match(/^save\s+contact\s+(.+?)\s+(\d[\d\s\-+]+)/i);
     if (saveMatch) {
       const name  = saveMatch[1].trim();
       const phone = saveMatch[2].replace(/[\s\-]/g, '').replace(/^\+91/, '').replace(/^91(?=\d{10}$)/, '');
@@ -363,7 +368,14 @@ export class ConversationEngine {
     const dueTodayTasks = tasks.filter(t => t.deadline && istDateStr(t.deadline) === todayStr);
     const upcomingTasks = tasks.filter(t => !t.deadline || istDateStr(t.deadline) > todayStr);
 
-    const fmtTask = t => `${t.title}[${(t.priority || 'M')[0].toUpperCase()}]${t.deadline ? ` ${formatDate(t.deadline)}` : ''}`;
+    const fmtTask = t => {
+      let deadline = '';
+      if (t.deadline) {
+        const d = t.deadline?.toDate ? t.deadline.toDate() : new Date(t.deadline);
+        deadline = ` ${isNaN(d) ? '' : formatDate(d)}`;
+      }
+      return `${t.title}[${(t.priority || 'M')[0].toUpperCase()}]${deadline}`;
+    };
     const taskParts = [];
     if (overdueTasks.length)  taskParts.push(`⚠️OVERDUE: ${overdueTasks.map(fmtTask).join(', ')}`);
     if (dueTodayTasks.length) taskParts.push(`TODAY: ${dueTodayTasks.map(fmtTask).join(', ')}`);

@@ -117,7 +117,9 @@ export class CommandHandler {
 
     let message = `📋 Your Tasks (${tasks.length})\n\n`;
     tasks.slice(0, 10).forEach((task, i) => {
-      const deadline = task.deadline ? new Date(task.deadline).toLocaleDateString() : 'No deadline';
+      const deadline = task.deadline
+        ? (task.deadline.toDate ? task.deadline.toDate() : new Date(task.deadline)).toLocaleDateString()
+        : 'No deadline';
       message += `${i + 1}. ${task.title}\n   📅 ${deadline}\n   Priority: ${task.priority}\n\n`;
     });
 
@@ -149,7 +151,10 @@ export class CommandHandler {
     let message = `${review.greeting}\n\n`;
     message += `✅ Completed Today: ${review.completedCount}\n`;
     message += `📝 Still Pending: ${review.pendingCount}\n\n`;
-    message += `Great work! Keep pushing tomorrow.`;
+    const closing = review.completedCount > 0
+      ? `Great work today! Keep the momentum going tomorrow.`
+      : `Rough day? That's okay — reset tomorrow and start fresh.`;
+    message += closing;
 
     return message;
   }

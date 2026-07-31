@@ -64,17 +64,28 @@ export class LLMAdapter {
   }
 
   async chat(messages, temperature = 0.7) {
-    const providers = [
-      { name: 'gemini', fn: () => this.callGemini(messages, temperature) },
-      { name: 'groq',   fn: () => this.callGroq(messages, temperature)   }
-    ];
+    // Detect action mode by checking for the JSON instruction marker in the system prompt
+    const firstContent = messages.find(m => m.role === 'system')?.content || messages[0]?.content || '';
+    const isActionMode = firstContent.includes('"actions"') || firstContent.includes('valid JSON');
+
+    // Action mode → Groq first (Gemini struggles with strict JSON output)
+    // Conversation mode → Gemini first (better personality, lower latency)
+    const providers = isActionMode
+      ? [
+          { name: 'groq',   fn: () => this.callGroq(messages, temperature)   },
+          { name: 'gemini', fn: () => this.callGemini(messages, temperature) }
+        ]
+      : [
+          { name: 'gemini', fn: () => this.callGemini(messages, temperature) },
+          { name: 'groq',   fn: () => this.callGroq(messages, temperature)   }
+        ];
 
     for (const provider of providers) {
       try {
         const result = await provider.fn();
         resetIfNewDay();
         dailyCallCount += Math.ceil(result.length / 4); // rough token estimate
-        logger.info('LLM_OK', { provider: provider.name });
+        logger.info('LLM_OK', { provider: provider.name, mode: isActionMode ? 'action' : 'conversation' });
         return result;
       } catch (error) {
         logger.warn(`${provider.name} failed, trying next`, { error: error.message });
