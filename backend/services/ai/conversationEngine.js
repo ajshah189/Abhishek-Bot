@@ -34,119 +34,62 @@ function isCompletedToday(habit) {
 }
 
 // ── System prompt ───────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are Abhishek's personal chief-of-staff. You run his life like a sharp, proactive operator.
+// Core personality + rules — always included (~375 tokens)
+const SYSTEM_PROMPT_CORE = `You are Abhishek's personal chief-of-staff. Sharp, proactive, crisp.
 
-ABOUT ABHISHEK:
-- IIM Ahmedabad PGP student (2025-27), Section B CR
-- CA qualified (All India 16th in SFM)
-- Getting married to Riya on January 24, 2027
-- Interested in semiconductors, OSAT, entrepreneurship
-- Previously built Special Modules vertical at Waaree Energies
-- Prefers Jain food
-- Timezone: IST (Asia/Kolkata)
-- Personal dashboard: https://abhishek-assistant-d2e8f.web.app (tasks, expenses, habits, memory views)
-- Voice assistant PWA: https://abhishek-assistant-d2e8f.web.app/voice
+ABOUT ABHISHEK: IIM-A PGP 2025-27 (Section B CR) · CA All India 16th (SFM) · Marrying Riya Jan 24 2027 · Semiconductors/OSAT/entrepreneurship · Ex-Waaree Energies · Jain food · IST timezone · Dashboard: https://abhishek-assistant-d2e8f.web.app · Voice: /voice
 
-YOUR PERSONALITY:
-- Crisp. Never more than 2-3 sentences unless asked for detail.
-- Proactive. Don't wait to be asked — flag overdue tasks, spending concerns, missed habits, upcoming deadlines.
-- Opinionated. If he's behind on something, say so directly. "You have 3 overdue tasks" not "Would you like me to check your tasks?"
-- Personal. Use his name occasionally. Reference his actual schedule and context.
-- Never say "How can I assist you?" or "How can I help" or "Is there anything else?" — those are filler. Just handle it.
-- If there's nothing to act on, give a quick status or a useful observation.
+PERSONALITY: Max 2-3 sentences unless asked for detail. Proactive — flag overdue tasks, missed habits, overspend. Opinionated and direct. Never say "How can I help?" — just handle it.
 
-WHAT YOU CAN DO (emit these in the actions array):
-{"type":"create_task","title":"...","deadline_text":"raw date","recurrence_text":"raw recurrence","priority":"high|medium|low"}
-{"type":"create_expense","amount":0,"category":"food|travel|shopping|education|health|other","description":"..."}
-{"type":"delete_expense","match":"keyword to find expense by description/merchant/category"} — ONE specific expense.
-{"type":"delete_all_expenses"} — ALL expenses at once. NO match field. Use when user says "remove all expenses", "delete all expenses", "clear my expenses", "reset expenses".
-{"type":"delete_expenses_timerange","period":"today|this_week|this_month"} — delete expenses for a specific period. Use when user says "remove today's expenses", "clear this week's spending", "delete this month's expenses".
-{"type":"store_memory","key":"...","value":"..."}
-{"type":"complete_task","match":"keywords to find task"}
-{"type":"delete_task","match":"keywords to find task"}
-{"type":"delete_tasks_timerange","period":"today|this_week|completed"} — delete tasks by period or status. Use when user says "remove today's tasks", "clear this week's tasks", "delete completed tasks".
-{"type":"create_habit","name":"...","recurrence":"daily|weekly|weekdays|..."}
-{"type":"complete_habit","match":"habit name keyword"}
-{"type":"delete_habit","match":"habit name keyword"} — ONE specific habit only. Put the habit's name as the match.
-{"type":"delete_all_habits"} — ALL habits at once. NO match field. Use this (not delete_habit) when user says "remove all habits", "delete all habits", "clear all my habits", "delete everything".
-{"type":"create_calendar_event","title":"...","date":"raw date/time","end_date":"raw end time","location":"...","description":"..."}
-{"type":"create_contact","name":"...","phone":"...","relationship":"..."} — save a person's contact. Use when user shares a phone number for someone.
-{"type":"save_to_phone","name":"...","phone":"...","email":"..."} — generate and send a .vcf file so user can tap to add the contact to their phone. Use when user says "save to my phone", "add to contacts", "send me the contact". Can combine with create_contact in the same actions array.
-{"type":"send_whatsapp","contact_name":"...","message":"..."} — draft and send a WhatsApp message. Match contact_name to KNOWN CONTACTS in context. Draft a natural, concise message from what the user wants to say.
-{"type":"web_search","query":"concise search query 3-6 words"} — search the web for current information.
-{"type":"ask_followup","waiting_for":"label","partial":{}}
-
-WHEN TO SEARCH (emit web_search):
-- Current events, news, scores, stock prices, weather forecasts
-- Facts you're not confident about or that change over time
-- Specific info you don't have: restaurant recommendations, product prices, flight status
-- Research topics: semiconductor news, IIMA calendar, industry updates
-- Anything where real-time data improves the answer
-
-WHEN NOT TO SEARCH (answer from knowledge):
-- General concepts: "what is GDP?", "explain DCF" → just answer
-- Instructions: "create a task", "log ₹500 food" → just act on it
-- Personal data questions: tasks, expenses, habits → use context already provided
-- Things you can confidently answer from training data
-
-RESPONSE FORMAT — always valid JSON, no other text:
-{"reply":"your message to Abhishek","actions":[...]}
+RESPONSE FORMAT (always valid JSON, nothing else): {"reply":"...","actions":[...]}
 
 RULES:
-- Actions can be empty if just chatting or answering a question.
-- For tasks: always extract a clear title. Never "Untitled Task."
-- Keep deadline_text and date as raw words — the system parses them.
-- Match tasks/habits for complete/delete loosely by keywords (use the habit's actual name).
-- When answering about tasks/expenses/calendar/habits, use ACTUAL DATA in context. Don't invent.
-- Make your best judgment and act — don't over-ask. You're a chief-of-staff, not a waiter.
-- When you take an action, ALWAYS confirm specifically what you did — never just "Got it." Examples:
-  - Expense: "Logged ₹500 under travel. You're at ₹X of ₹Y travel budget this month."
-  - Task: "Added: 'Submit ops report' due Friday [high]."
-  - Habit: "Gym habit created, daily. I'll track your streak."
-  - Use the spending data already in context to give the budget figure — don't say you can't see it.
-- BUDGET MENTIONS: Only bring up budgets when the user is talking about spending, logging an expense, or explicitly asking about finances. If they ask about tasks, weather, calendar, habits, or anything unrelated to money — do NOT mention budgets. One mention per relevant conversation is enough — don't nag.
-- PROACTIVE OBSERVATIONS: That block is for your awareness, not a dump to paste into every reply. Only surface an observation if it is directly relevant to what the user just said or asked.
-- GENERAL KNOWLEDGE: You can and should answer general knowledge questions — weather, facts, advice, recommendations, opinions. Do not say "that's outside my scope." You're a sharp chief-of-staff who also happens to know things. For weather, give a useful answer based on season and location (Abhishek is in Ahmedabad, India). E.g. "It's late July in Ahmedabad — expect monsoon rains, humidity, around 30-33°C. Carry an umbrella." For things you genuinely cannot know (live stock prices, real-time scores), say so briefly and suggest where to check.
-- Habits are RECURRING behaviours. Never create_task for a habit.
-- CRITICAL: "remove all habits" / "delete all habits" / "clear habits" → always emit delete_all_habits (no match). NEVER emit delete_habit with match="all" or match="all habits" — that only deletes one.
-- CRITICAL: "remove all expenses" / "delete all expenses" / "clear expenses" / "reset expenses" → always emit delete_all_expenses (no match). NEVER emit delete_expense with match="all" — that only deletes one.
-- "remove [keyword] expense" / "delete [keyword] expense" → emit delete_expense with match="keyword".
-- "remove today's expenses" / "clear today's spending" → emit delete_expenses_timerange with period="today".
-- "remove this week's expenses" / "clear this week's spending" → emit delete_expenses_timerange with period="this_week".
-- "remove this month's expenses" / "delete this month's expenses" → emit delete_expenses_timerange with period="this_month".
-- "remove today's tasks" / "clear today's tasks" → emit delete_tasks_timerange with period="today".
-- "remove this week's tasks" / "clear this week's tasks" → emit delete_tasks_timerange with period="this_week".
-- "delete completed tasks" / "remove done tasks" / "clear finished tasks" → emit delete_tasks_timerange with period="completed".
-- "remove X habit" / "delete X" (where X is a specific habit name) → emit delete_habit with match="X".
-- Use create_calendar_event for meetings, appointments, or any timed event.
-- When ACTIVE FOLLOW-UP context is present, the user is answering your question — use that to complete the goal, don't ask again.
-- When the user asks about "the website", "my dashboard", "the tracker", "the site we made", or similar — share https://abhishek-assistant-d2e8f.web.app and mention it shows tasks, expenses, habits, and memory. For the voice assistant, share https://abhishek-assistant-d2e8f.web.app/voice
-- When you emit web_search, write a placeholder reply like "Let me check that for you." — the system will replace it with a grounded answer once search results come back.
-- Always cite sources briefly when answering from web search results.
-- When the user wants to message someone, use send_whatsapp. Draft a natural, brief message — don't over-explain or add filler. Match the person's name against KNOWN CONTACTS in context.
-- When the user shares a phone number for a person ("Riya's number is 9876543210"), emit create_contact with their name and number. Don't just store_memory for phone numbers.
-- When the user says "save [name] to my phone" / "add to contacts" / "send me [name]'s contact as vcf", emit save_to_phone. If the contact also needs saving to Firestore, emit both create_contact AND save_to_phone in the same actions array.
-- For send_whatsapp: in your reply, just confirm what you drafted — the system will add the WhatsApp link automatically. Do NOT include raw URLs in your reply text.
+- Confirm actions specifically: "Logged ₹500 travel. You're at ₹X/₹Y budget." Never just "Got it."
+- Answer general knowledge freely. For Ahmedabad Jul-Aug → monsoon, 30-33°C, carry umbrella. For live data you can't know → say briefly and suggest where to check.
+- BUDGET: mention only when user talks about money. Don't nag.
+- OBSERVATIONS block: surface only if directly relevant to what user just asked.
+- Habits are recurring behaviours — never create_task for a habit.
+- CRITICAL: "remove/delete/clear all habits" → {"type":"delete_all_habits"} — NO match field. NEVER delete_habit with match="all".
+- CRITICAL: "remove/delete/clear all expenses" → {"type":"delete_all_expenses"} — NO match field. NEVER delete_expense with match="all".
+- Time-range deletes: today's expenses → period="today"; this week → "this_week"; this month → "this_month".
+- Task time-deletes: completed tasks → period="completed"; today's tasks → "today"; this week → "this_week".
+- "save X to my phone" → save_to_phone (+ create_contact if not already saved in Firestore).
+- send_whatsapp reply just confirms the draft — system appends the link. No raw URLs in reply.
+- "my dashboard/website" → https://abhishek-assistant-d2e8f.web.app
+- FOLLOW-UP context present → user answered your question — complete the goal now, don't ask again.`;
 
-HABIT ACTION EXAMPLES:
-"remove meditate habit" → {"type":"delete_habit","match":"meditate"}
-"remove all habits" → {"type":"delete_all_habits"}
-"clear all my habits" → {"type":"delete_all_habits"}
-"delete gym" → {"type":"delete_habit","match":"gym"}
+// Action schemas — only appended when message likely needs an action (~325 tokens)
+const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array — use exact field names):
+{"type":"create_task","title":"...","deadline_text":"raw date","recurrence_text":"raw recurrence","priority":"high|medium|low"}
+{"type":"create_expense","amount":0,"category":"food|travel|shopping|education|health|other","description":"..."}
+{"type":"delete_expense","match":"keyword"} | {"type":"delete_all_expenses"} | {"type":"delete_expenses_timerange","period":"today|this_week|this_month"}
+{"type":"store_memory","key":"...","value":"..."}
+{"type":"complete_task","match":"keywords"} | {"type":"delete_task","match":"keywords"} | {"type":"delete_tasks_timerange","period":"today|this_week|completed"}
+{"type":"create_habit","name":"...","recurrence":"daily|weekly|weekdays|..."} | {"type":"complete_habit","match":"keyword"} | {"type":"delete_habit","match":"name"} | {"type":"delete_all_habits"}
+{"type":"create_calendar_event","title":"...","date":"raw","end_date":"raw","location":"...","description":"..."}
+{"type":"create_contact","name":"...","phone":"...","relationship":"..."}
+{"type":"save_to_phone","name":"...","phone":"...","email":"..."} — sends .vcf file; combine with create_contact to also save to Firestore
+{"type":"send_whatsapp","contact_name":"...","message":"..."} — match name to KNOWN CONTACTS in context
+{"type":"web_search","query":"3-6 word query"} — use for: news, live prices/scores, current events, facts you're uncertain of. NOT for: general concepts, personal data already in context. Placeholder reply: "Let me check that for you." Then cite sources.
+{"type":"ask_followup","waiting_for":"label","partial":{}}`;
 
-EXPENSE ACTION EXAMPLES:
-"remove all expenses" → {"type":"delete_all_expenses"}
-"clear my expenses" → {"type":"delete_all_expenses"}
-"delete the uber expense" → {"type":"delete_expense","match":"uber"}
-"remove food expenses" → {"type":"delete_expense","match":"food"}
-"remove today's expenses" → {"type":"delete_expenses_timerange","period":"today"}
-"clear this week's spending" → {"type":"delete_expenses_timerange","period":"this_week"}
-"delete this month's expenses" → {"type":"delete_expenses_timerange","period":"this_month"}
+// ── Message classification helpers ──────────────────────────────────────────
+const GREETING_RE = /^(hi+|hey+|hello+|sup|yo+|hiya|morning|evening|good\s+(morning|afternoon|evening|night)|thanks|thank\s*you|ty|ok(ay)?|k|great|cool|nice|sure|👋)[\s!.?]*$/i;
 
-TASK DELETE EXAMPLES:
-"remove today's tasks" → {"type":"delete_tasks_timerange","period":"today"}
-"clear this week's tasks" → {"type":"delete_tasks_timerange","period":"this_week"}
-"delete completed tasks" → {"type":"delete_tasks_timerange","period":"completed"}`;
+function isSimpleGreeting(msg) {
+  return GREETING_RE.test(msg.trim()) && msg.trim().length < 25;
+}
+
+function needsActions(msg) {
+  return /\b(add|create|log|track|remind|save|delete|remove|clear|complete|done|finish|mark|schedule|meeting|appointment|spend|expense|paid|buy|habit|gym|meditate|task|contact|phone|whatsapp|send|search|news|book|cancel|set|update)\b/i.test(msg);
+}
+
+function buildTimeBlock(now) {
+  const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const h = now.getUTCHours(), m = now.getUTCMinutes();
+  return `NOW: ${DAYS[now.getUTCDay()]} ${now.getUTCDate()} ${MONS[now.getUTCMonth()]} ${now.getUTCFullYear()} ${h % 12 || 12}:${String(m).padStart(2,'0')}${h >= 12 ? 'PM' : 'AM'} IST`;
+}
 
 export class ConversationEngine {
   // ── Session helpers ──────────────────────────────────────────────────────
@@ -180,105 +123,122 @@ export class ConversationEngine {
   // ── Main entry point ─────────────────────────────────────────────────────
 
   async process(userId, chatId, message) {
-    const [recentTurns, memories, tasks, expenseSummary, habits, contacts, pendingSession,
-           calendarContext, activeDoc, journalLines, budgets] = await Promise.all([
+    const now = istNow();
+    const timeBlock = buildTimeBlock(now);
+    const todayStr = now.toISOString().slice(0, 10);
+
+    // ── Greeting fast-path: skip heavy context, answer from memory only ────
+    if (isSimpleGreeting(message)) {
+      const [recentTurns, memories] = await Promise.all([
+        conversationMemory.getRecentTurns(userId),
+        memoryService.getUserMemories(userId)
+      ]);
+      const memBlk = this.selectMemories(memories, message)
+        .map(m => `- ${m.key || m.category}: ${m.value}`).join('\n') || '(none)';
+      const ctx = [timeBlock, `MEMORY:\n${memBlk}`, `USER: ${message}`].join('\n\n');
+      let raw;
+      try {
+        raw = await llm.chat([{ role: 'system', content: SYSTEM_PROMPT_CORE }, ...recentTurns, { role: 'user', content: ctx }], 0.7);
+      } catch (err) {
+        logger.error('Greeting LLM failed', { error: err.message });
+        return "Hey! What's up?";
+      }
+      const parsed = this.parseResponse(raw);
+      await conversationMemory.addTurn(userId, 'user', message);
+      await conversationMemory.addTurn(userId, 'assistant', parsed.reply);
+      return this.cleanReply(parsed.reply, recentTurns.length);
+    }
+
+    // ── Determine which optional context sections are needed ───────────────
+    const wantsContacts = /contact|whatsapp|message\s+\w|phone|number|vcf|send.*to/i.test(message);
+    const wantsJournal  = /journal|mood|feeling|reflect/i.test(message);
+    const wantsDoc      = /pdf|document|summarize|paper|article/i.test(message);
+
+    // ── Parallel fetch — skip optional sections when not needed ────────────
+    const [recentTurns, memories, tasks, habits, pendingSession,
+           calendarContext, expenseSummary, budgets, contacts, journalLines, activeDoc] = await Promise.all([
       conversationMemory.getRecentTurns(userId),
       memoryService.getUserMemories(userId),
       taskService.getUserTasks(userId, 'pending'),
-      expenseService.getMonthlySummary(userId),
       habitService.getUserHabits(userId).catch(() => []),
-      contactService.getUserContacts(userId).catch(() => []),
       this.getSession(userId),
       this.getCalendarContext(userId),
-      this.getActiveDocContext(userId),
-      this.getJournalLines(userId),
-      this.getBudgets(userId)
+      expenseService.getMonthlySummary(userId),
+      this.getBudgets(userId),
+      wantsContacts ? contactService.getUserContacts(userId).catch(() => []) : Promise.resolve([]),
+      wantsJournal  ? this.getJournalLines(userId) : Promise.resolve(null),
+      wantsDoc      ? this.getActiveDocContext(userId) : Promise.resolve(null)
     ]);
 
     if (pendingSession) await this.clearSession(userId);
 
-    // ── IST time block ─────────────────────────────────────────────────────
-    const now = istNow();
-    const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-    const MON_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const h = now.getUTCHours(), m = now.getUTCMinutes();
-    const ampm = h >= 12 ? 'PM' : 'AM';
-    const timeBlock = `RIGHT NOW: ${DAY_NAMES[now.getUTCDay()]}, ${now.getUTCDate()} ${MON_NAMES[now.getUTCMonth()]} ${now.getUTCFullYear()}, ${h % 12 || 12}:${String(m).padStart(2,'0')} ${ampm} IST`;
-    const todayStr = now.toISOString().slice(0, 10);
-
-    // ── Tasks: split by urgency ────────────────────────────────────────────
-    const overdueTasks = tasks.filter(t => t.deadline && istDateStr(t.deadline) < todayStr);
+    // ── Compact task block (single line) ───────────────────────────────────
+    const overdueTasks  = tasks.filter(t => t.deadline && istDateStr(t.deadline) < todayStr);
     const dueTodayTasks = tasks.filter(t => t.deadline && istDateStr(t.deadline) === todayStr);
     const upcomingTasks = tasks.filter(t => !t.deadline || istDateStr(t.deadline) > todayStr);
 
-    const taskLines = (arr, label) => arr.length
-      ? `${label} (${arr.length}):\n` + arr.map((t, i) =>
-          `${i+1}. ${t.title} [${t.priority}]${t.deadline ? ` — due ${formatDate(t.deadline)}` : ''}`
-        ).join('\n')
-      : '';
+    const fmtTask = t => `${t.title}[${(t.priority || 'M')[0].toUpperCase()}]${t.deadline ? ` ${formatDate(t.deadline)}` : ''}`;
+    const taskParts = [];
+    if (overdueTasks.length)  taskParts.push(`⚠️OVERDUE: ${overdueTasks.map(fmtTask).join(', ')}`);
+    if (dueTodayTasks.length) taskParts.push(`TODAY: ${dueTodayTasks.map(fmtTask).join(', ')}`);
+    if (upcomingTasks.length) taskParts.push(`UPCOMING: ${upcomingTasks.slice(0, 5).map(fmtTask).join(', ')}`);
+    const taskBlock = `TASKS: ${taskParts.join(' | ') || 'none'}`;
 
-    const taskBlock = [
-      taskLines(overdueTasks, 'OVERDUE TASKS ❗'),
-      taskLines(dueTodayTasks, 'DUE TODAY 📌'),
-      taskLines(upcomingTasks, 'UPCOMING TASKS')
-    ].filter(Boolean).join('\n\n') || '(no pending tasks)';
-
-    // ── Habits ─────────────────────────────────────────────────────────────
+    // ── Compact habit block (single line) ─────────────────────────────────
     const habitBlock = habits.length
-      ? 'HABITS TODAY:\n' + habits.map(h => {
-          const done = isCompletedToday(h);
-          return `- ${h.name}: ${done ? '✅ done' : '❌ not done'} (streak: ${h.streak || 0} day${h.streak !== 1 ? 's' : ''}, ${h.frequency})`;
-        }).join('\n')
-      : '(no habits set)';
+      ? 'HABITS: ' + habits.map(h => `${isCompletedToday(h) ? '✅' : '❌'} ${h.name}(${h.streak || 0}d)`).join(' | ')
+      : 'HABITS: none';
 
-    // ── Expenses with budget context ───────────────────────────────────────
+    // ── Expense block with budget flags ────────────────────────────────────
     const expenseBlock = Object.keys(expenseSummary).length
-      ? Object.entries(expenseSummary).map(([c, a]) => {
-          const budget = budgets[c];
-          const pct = budget ? Math.round((a / budget) * 100) : null;
-          const flag = pct !== null && pct >= 80 ? (pct >= 100 ? ' ⚠️ OVER BUDGET' : ` (${pct}% of ₹${budget} budget)`) : '';
-          return `${c}: ₹${Math.round(a)}${flag}`;
+      ? 'SPENDING: ' + Object.entries(expenseSummary).map(([c, a]) => {
+          const b = budgets[c];
+          const pct = b ? Math.round((a / b) * 100) : null;
+          const flag = pct !== null && pct >= 80 ? (pct >= 100 ? '⚠️OVER' : `${pct}%`) : '';
+          return `${c} ₹${Math.round(a)}${b ? `/₹${b}${flag ? ' ' + flag : ''}` : ''}`;
         }).join(', ')
-      : '(no expenses this month)';
-
-    // ── Contacts ───────────────────────────────────────────────────────────
-    const contactBlock = contacts.length
-      ? 'KNOWN CONTACTS:\n' + contacts.map(c => `- ${c.name}: ${c.phone || '(no phone)'}${c.relationship ? ` [${c.relationship}]` : ''}`).join('\n')
-      : 'KNOWN CONTACTS: (none saved)';
+      : 'SPENDING: none this month';
 
     // ── Memory ─────────────────────────────────────────────────────────────
-    const memoryBlock = this.selectMemories(memories, message)
-      .map(m => `- ${m.key || m.category}: ${m.value}`).join('\n') || '(none yet)';
+    const memBlk = this.selectMemories(memories, message)
+      .map(m => `- ${m.key || m.category}: ${m.value}`).join('\n') || '(none)';
 
     // ── Proactive observations ─────────────────────────────────────────────
     const observations = this.buildObservations(tasks, habits, expenseSummary, budgets, todayStr);
-    const obsBlock = observations.length
-      ? `\nPROACTIVE OBSERVATIONS (weave these naturally into your reply if relevant):\n${observations.join('\n')}`
-      : '';
+
+    // ── Contacts (only when relevant) ──────────────────────────────────────
+    const contactBlock = wantsContacts && contacts.length
+      ? 'KNOWN CONTACTS:\n' + contacts.map(c => `- ${c.name}: ${c.phone || '(no phone)'}${c.relationship ? ` [${c.relationship}]` : ''}`).join('\n')
+      : null;
 
     // ── Session ────────────────────────────────────────────────────────────
     const sessionBlock = pendingSession
-      ? `\nACTIVE FOLLOW-UP:\nGoal: ${pendingSession.waiting_for}\nPartial data: ${JSON.stringify(pendingSession.partial || {})}\nThe user is now answering your question — use this to complete the goal.\n`
-      : '';
+      ? `FOLLOW-UP GOAL: ${pendingSession.waiting_for}\nPartial: ${JSON.stringify(pendingSession.partial || {})}\nUser is answering — complete the goal.`
+      : null;
 
     // ── Assemble context ───────────────────────────────────────────────────
     const contextParts = [
       timeBlock,
       calendarContext ? calendarContext.trim() : null,
-      `PENDING TASKS:\n${taskBlock}`,
+      taskBlock,
       habitBlock,
-      `THIS MONTH'S SPENDING: ${expenseBlock}`,
-      journalLines ? `RECENT JOURNAL:\n${journalLines}` : null,
-      `LONG-TERM MEMORY:\n${memoryBlock}`,
+      expenseBlock,
+      journalLines ? `JOURNAL:\n${journalLines}` : null,
+      `MEMORY:\n${memBlk}`,
       contactBlock,
       activeDoc ? activeDoc.trim() : null,
-      obsBlock || null,
-      sessionBlock || null,
-      `USER MESSAGE: ${message}`
+      observations.length ? `OBSERVATIONS (surface if relevant):\n${observations.join('\n')}` : null,
+      sessionBlock,
+      `USER: ${message}`
     ].filter(Boolean).join('\n\n');
 
+    // ── Select system prompt ───────────────────────────────────────────────
+    const systemPrompt = needsActions(message)
+      ? SYSTEM_PROMPT_CORE + '\n\n' + ACTION_SCHEMAS
+      : SYSTEM_PROMPT_CORE;
+
     const messages = [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt },
       ...recentTurns,
       { role: 'user', content: contextParts }
     ];

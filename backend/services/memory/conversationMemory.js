@@ -63,4 +63,4 @@ export class ConversationMemory {
   }
 }
 
-export const conversationMemory = new ConversationMemory(10);
+export const conversationMemory = new ConversationMemory(5);
