@@ -90,6 +90,9 @@ export class CommandHandler {
         case 'list':
           return await this.handleList(userId, args);
 
+        case 'contacts':
+          return await this.handleContacts(userId, args);
+
         case 'settings':
           return this.handleSettings();
 
@@ -272,6 +275,8 @@ Search & News
 /news [topic] - Latest news headlines
 
 Contacts
+/contacts - List all saved contacts
+/contacts search [name] - Search contacts
 /savecontact [name] - Send contact as .vcf
 /apps - Phone shortcuts (call, SMS, maps, music, timer)
 
@@ -286,6 +291,32 @@ Quick capture (no slash needed):
   "mtg 3pm" → calendar event
   "create grocery list" → new list
   "add milk to grocery" → add to list`;
+  }
+
+  async handleContacts(userId, args) {
+    const { contactService } = await import('../contacts/contactService.js');
+
+    if (args.length > 0 && args[0] === 'search') {
+      const query = args.slice(1).join(' ');
+      if (!query) return 'Usage: /contacts search [name]';
+      const results = await contactService.searchContacts(userId, query);
+      if (!results.length) return `No contacts matching "${query}"`;
+      let msg = `🔍 Contacts matching "${query}":\n\n`;
+      results.slice(0, 10).forEach((c, i) => {
+        msg += `${i + 1}. ${c.name}${c.phone ? ' — ' + c.phone : ''}\n`;
+      });
+      return msg;
+    }
+
+    const contacts = await contactService.getUserContacts(userId);
+    if (!contacts.length) return '📱 No contacts saved. Say "save [name]\'s number [number]" to add one.';
+
+    let msg = `📱 Contacts (${contacts.length})\n\n`;
+    contacts.slice(0, 20).forEach((c, i) => {
+      msg += `${i + 1}. ${c.name}${c.phone ? ' — ' + c.phone : ''}\n`;
+    });
+    if (contacts.length > 20) msg += `\n...and ${contacts.length - 20} more. Use /contacts search [name] to find specific ones.`;
+    return msg;
   }
 
   async handleConnectCalendar(userId, chatId) {
