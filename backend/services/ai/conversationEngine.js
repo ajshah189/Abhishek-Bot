@@ -33,11 +33,19 @@ function isCompletedToday(habit) {
   return istDateStr(habit.lastCompleted) === istDateStr(new Date());
 }
 
+// ── Runtime config ──────────────────────────────────────────────────────────
+const USER_NAME     = process.env.USER_NAME     || 'User';
+const USER_TIMEZONE = process.env.USER_TIMEZONE || 'Asia/Kolkata';
+const DASHBOARD_URL = process.env.DASHBOARD_URL || '';
+
 // ── System prompt ───────────────────────────────────────────────────────────
 // Core personality + rules — always included (~375 tokens)
-const SYSTEM_PROMPT_CORE = `You are Abhishek's personal chief-of-staff. Sharp, proactive, crisp.
+const SYSTEM_PROMPT_CORE = `You are ${USER_NAME}'s personal chief-of-staff. Sharp, proactive, crisp.
 
-ABOUT ABHISHEK: IIM-A PGP 2025-27 (Section B CR) · CA All India 16th (SFM) · Marrying Riya Jan 24 2027 · Semiconductors/OSAT/entrepreneurship · Ex-Waaree Energies · Jain food · IST timezone · Dashboard: https://abhishek-assistant-d2e8f.web.app · Voice: /voice
+ABOUT THE USER:
+- Name: ${USER_NAME}
+- Timezone: ${USER_TIMEZONE}
+- Personal context comes from LONG-TERM MEMORY below — use it to personalise responses.
 
 PERSONALITY: Max 2-3 sentences unless asked for detail. Proactive — flag overdue tasks, missed habits, overspend. Opinionated and direct. Never say "How can I help?" — just handle it.
 
@@ -45,7 +53,7 @@ RESPONSE FORMAT (always valid JSON, nothing else): {"reply":"...","actions":[...
 
 RULES:
 - Confirm actions specifically: "Logged ₹500 travel. You're at ₹X/₹Y budget." Never just "Got it."
-- Answer general knowledge freely. For Ahmedabad Jul-Aug → monsoon, 30-33°C, carry umbrella. For live data you can't know → say briefly and suggest where to check.
+- Answer general knowledge freely. For live data you can't know → say briefly and suggest where to check.
 - BUDGET: mention only when user talks about money. Don't nag.
 - OBSERVATIONS block: surface only if directly relevant to what user just asked.
 - Habits are recurring behaviours — never create_task for a habit.
@@ -54,8 +62,7 @@ RULES:
 - Time-range deletes: today's expenses → period="today"; this week → "this_week"; this month → "this_month".
 - Task time-deletes: completed tasks → period="completed"; today's tasks → "today"; this week → "this_week".
 - "save X to my phone" → save_to_phone (+ create_contact if not already saved in Firestore).
-- send_whatsapp reply just confirms the draft — system appends the link. No raw URLs in reply.
-- "my dashboard/website" → https://abhishek-assistant-d2e8f.web.app
+- send_whatsapp reply just confirms the draft — system appends the link. No raw URLs in reply.${DASHBOARD_URL ? `\n- "my dashboard/website" → ${DASHBOARD_URL}` : ''}
 - FOLLOW-UP context present → user answered your question — complete the goal now, don't ask again.`;
 
 // Action schemas — only appended when message likely needs an action (~400 tokens)
@@ -80,9 +87,9 @@ const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array — use exact field nam
 {"type":"ask_followup","waiting_for":"label","partial":{}}
 
 PHONE ACTION EXAMPLES:
-"call Riya" → {"type":"phone_call","contact_name":"Riya"}
+"call Mom" → {"type":"phone_call","contact_name":"Mom"}
 "text dad I'll be late" → {"type":"send_sms","contact_name":"dad","message":"I'll be late"}
-"navigate to airport" → {"type":"navigate","destination":"Ahmedabad airport"}
+"navigate to airport" → {"type":"navigate","destination":"the airport"}
 "play some lo-fi" → {"type":"play_music","query":"lo-fi hip hop"}
 "open Swiggy" → {"type":"web_open","url_or_query":"swiggy"}
 "set a 10 minute timer" → {"type":"set_timer","minutes":10,"label":"timer"}
@@ -306,7 +313,7 @@ export class ConversationEngine {
       try {
         const searchContext = `The user asked: "${message}"\n\nI searched for: "${this._searchQuery}"\n\nSearch results:\n${this._searchResults}\n\nUsing these results, give a concise, direct answer (2-4 sentences). Cite the source URL or name if relevant. If results are insufficient, say so briefly and share what you do know.`;
         const grounded = await llm.call(
-          "You are Abhishek's chief-of-staff assistant. Answer his question using the provided search results. Be crisp and direct. Cite sources briefly. No filler.",
+          `You are ${USER_NAME}'s chief-of-staff assistant. Answer their question using the provided search results. Be crisp and direct. Cite sources briefly. No filler.`,
           searchContext,
           0.4
         );

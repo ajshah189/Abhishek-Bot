@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { Mic, MicOff, Send, Loader2, ChevronLeft } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
+import { USER_ID } from '../config/firebase.js';
 
-const API_BASE = 'https://abhishek-assistant-telegram-727365940229.asia-southeast1.run.app';
-const API_KEY = 'abhishek-voice-2026';
-const USER_ID = '7307120782';
+const API_BASE = import.meta.env.VITE_API_BASE || '';
+const API_KEY  = import.meta.env.VITE_VOICE_API_KEY || '';
 
 const isStandalone =
   window.matchMedia('(display-mode: standalone)').matches ||

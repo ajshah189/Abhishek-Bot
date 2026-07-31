@@ -1,178 +1,182 @@
-# Abhishek Assistant - Personal AI Executive Assistant
+# Personal AI Executive Assistant (Telegram)
 
-Your second brain. On Telegram.
+Your second brain on Telegram. Natural language task management, expense tracking, habits, contacts, calendar, voice, and more — all powered by Groq + Firebase, deployable in ~5 minutes.
 
 ## Features
 
-✅ **Intent-Based Processing** — Understands natural language automatically  
-✅ **Task Management** — Create, track, complete tasks  
-✅ **Expense Tracking** — Log spending, monthly summaries  
-✅ **Reminders** — Smart reminders with auto-scheduling  
-✅ **Memory System** — Store preferences, routines, relationships  
-✅ **Notes & Journal** — Save thoughts, journal entries, reflections  
-✅ **Calendar** — Manage events and meetings  
-✅ **Search** — Search all notes, tasks, memories  
-✅ **Daily Planner** — Automatic morning briefing  
-✅ **Evening Review** — Automatic evening summary  
-✅ **Habits** — Track daily habits with streaks  
-✅ **Contacts** — Manage contacts with birthdays  
-✅ **Commands** — Slash commands for quick access  
+- **Natural language** — "spent ₹450 on dinner", "remind me Friday 9am", "call Mom"
+- **Tasks** — create, complete, delete, time-range cleanup
+- **Expenses** — log, summarise, budget warnings, receipt scanning (photo)
+- **Habits** — daily tracking with streaks
+- **Contacts** — save contacts, send WhatsApp, call/SMS via deep links, export .vcf
+- **Calendar** — Google Calendar integration
+- **Voice** — voice notes in Telegram + PWA voice assistant
+- **Web search** — DDG-backed live search with LLM synthesis
+- **Memory** — long-term key-value memory, journal, notes
+- **Daily/evening briefs** — automated morning and evening summaries
+- **Phone deep links** — call, SMS, navigate, play music, open apps, set timer
+- **PDF summarisation** — upload a PDF, ask questions about it
 
-## Quick Start
+## 5-Minute Setup
 
 ### Prerequisites
 
-- Node.js 18+
-- Firebase project setup
-- Telegram bot token
-- Groq API key
+- Node.js 20+
+- A [Telegram bot](https://t.me/BotFather) token
+- A [Firebase](https://console.firebase.google.com) project (free Spark plan is enough)
+- A [Groq](https://console.groq.com) API key (free)
 
-### Setup
+### 1 — Clone & Install
 
 ```bash
-# Clone and install
-git clone <repo>
+git clone https://github.com/your-username/abhishek-assistant-telegram
 cd abhishek-assistant-telegram
 npm install
+```
 
-# Configure environment
-cp .env.example .env
-# Fill in your credentials in .env
+### 2 — Run Setup Wizard
 
-# Run locally
+```bash
+node backend/setup/setupWizard.js
+```
+
+The wizard asks for your credentials and writes `.env` and `user-config.json` for you. Have these ready:
+
+| What | Where to get it |
+|------|----------------|
+| Telegram bot token | [@BotFather](https://t.me/BotFather) → `/newbot` |
+| Your Telegram user ID | Send `/id` to [@userinfobot](https://t.me/userinfobot) |
+| Groq API key | [console.groq.com](https://console.groq.com) |
+| Firebase Admin key | Firebase Console → Project Settings → Service Accounts → Generate New Private Key |
+| Firebase Web config | Firebase Console → Project Settings → Your apps → Web app → SDK config |
+
+### 3 — Run Locally
+
+```bash
 npm run dev
 ```
 
-### Environment Variables
+### 4 — Expose with ngrok (for Telegram webhook)
 
-```env
-TELEGRAM_BOT_TOKEN=your-bot-token
-GROQ_API_KEY=your-groq-key
-FIREBASE_PROJECT_ID=your-project-id
-FIREBASE_PRIVATE_KEY=your-private-key
-# ... see .env.example for all vars
+```bash
+ngrok http 8080
 ```
+
+Copy the `https://` URL, then set it in `.env`:
+
+```
+TELEGRAM_WEBHOOK_URL=https://your-ngrok-url.ngrok-free.app/webhook
+```
+
+Then register the webhook:
+
+```bash
+node backend/setup/setupWebhook.js
+```
+
+### 5 — Message Your Bot
+
+Open Telegram, find your bot, say "hi". Done.
+
+---
+
+## Cloud Deployment (Google Cloud Run)
+
+```bash
+gcloud run deploy personal-assistant \
+  --source . \
+  --region asia-southeast1 \
+  --allow-unauthenticated \
+  --set-env-vars "$(grep -v '^#' .env | grep -v '^$' | tr '\n' ',')"
+```
+
+Or see [`DEPLOYMENT.md`](DEPLOYMENT.md) for a step-by-step walkthrough.
+
+---
+
+## Dashboard (Voice PWA)
+
+The `dashboard/` directory is a React/Vite app. The setup wizard writes all `VITE_*` env vars automatically.
+
+```bash
+cd dashboard
+npm install
+npm run dev        # local preview
+npm run build      # build for production
+firebase deploy    # deploy to Firebase Hosting
+```
+
+---
+
+## Telegram Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/tasks` | Pending tasks |
+| `/habits` | Today's habits |
+| `/expenses` | Monthly expense summary |
+| `/daily` | Morning brief |
+| `/evening` | Evening review |
+| `/calendar` | Upcoming events |
+| `/contacts` | Contact list |
+| `/news [topic]` | Latest news |
+| `/apps` | Phone deep-link shortcuts |
+| `/savecontact [name] [phone]` | Save contact + send .vcf |
+| `/voice` | Open voice assistant |
+| `/help` | Full command list |
+
+---
 
 ## Architecture
 
 ```
-Backend (Node.js + Express)
-        ↓
-Intent Extractor (Groq/Claude LLM)
-        ↓
-Service Layer (Tasks, Expenses, Reminders, etc.)
-        ↓
-Firebase Firestore (Database)
-Firebase Storage (Files)
-        ↓
-Telegram Bot API (Messages)
+Telegram ──► Webhook (Express)
+                │
+                ▼
+         ConversationEngine
+         (Groq LLM + context)
+                │
+         ┌──────┼──────┐
+         ▼      ▼      ▼
+      Tasks  Expenses  Habits
+      Contacts  Calendar  Search
+                │
+                ▼
+         Firebase Firestore
 ```
 
-## API Routes
+---
 
-### Health Check
-- `GET /health` — Server status
+## Environment Variables
 
-### Commands
-- `GET /api/tasks?userId=xxx` — List tasks
-- `GET /api/daily-brief?userId=xxx` — Get daily brief
-- `GET /api/search?userId=xxx&query=xxx` — Search
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | ✅ | Bot token from BotFather |
+| `GROQ_API_KEY` | ✅ | Groq API key |
+| `FIREBASE_PROJECT_ID` | ✅ | Firebase project ID |
+| `FIREBASE_PRIVATE_KEY` | ✅ | Admin SDK private key |
+| `FIREBASE_CLIENT_EMAIL` | ✅ | Admin SDK client email |
+| `USER_NAME` | ✅ | Your name (used in bot personality) |
+| `USER_TIMEZONE` | ✅ | IANA timezone (e.g. `Asia/Kolkata`) |
+| `OWNER_TELEGRAM_ID` | ✅ | Your Telegram user ID |
+| `VOICE_API_KEY` | ✅ | API key for the voice dashboard |
+| `DASHBOARD_URL` | — | Your deployed dashboard URL |
+| `VITE_USER_ID` | — | Same as OWNER_TELEGRAM_ID (dashboard) |
+| `VITE_API_BASE` | — | Backend URL (dashboard) |
+| `VITE_VOICE_API_KEY` | — | Same as VOICE_API_KEY (dashboard) |
+| `VITE_FIREBASE_*` | — | Firebase web app config (dashboard) |
+| `GOOGLE_CLIENT_ID` | — | Google OAuth (Calendar) |
+| `GOOGLE_CLIENT_SECRET` | — | Google OAuth (Calendar) |
 
-## Telegram Commands
+See [`.env.example`](.env.example) for the full list.
 
-```
-/tasks    — Show pending tasks
-/daily    — Daily brief
-/evening  — Evening review
-/habits   — Show habits
-/expenses — Monthly summary
-/search <query> — Search
-/help     — Show commands
-/settings — Manage settings
-```
-
-## Natural Language Examples
-
-```
-"Gym tomorrow 6"                    → Creates reminder
-"Spent ₹450 on dinner"              → Logs expense
-"Need to submit assignment Friday"  → Creates task
-"Remember I like Jain food"         → Stores memory
-"Add Riya's number 9876543210"      → Creates contact
-"What are my pending assignments?"  → Searches tasks
-```
-
-## Services
-
-| Service | Purpose |
-|---------|---------|
-| TaskService | Create, manage, complete tasks |
-| ExpenseService | Log and track expenses |
-| ReminderService | Create and send reminders |
-| MemoryService | Store long-term memory |
-| NoteService | Save notes and ideas |
-| JournalService | Journal entries and reflections |
-| CalendarService | Manage events |
-| ContactService | Manage contacts |
-| SearchService | Global search across all data |
-| PlannerService | Daily/evening summaries |
-| ReminderPoller | Automatic reminder delivery |
-| ScheduleService | Schedule daily tasks |
-
-## Database Schema
-
-All data stored in Firestore:
-
-- `users` — User profiles and settings
-- `tasks` — Tasks and to-dos
-- `expenses` — Expense records
-- `reminders` — Reminders
-- `notes` — Notes
-- `journal` — Journal entries
-- `memories` — Long-term memory
-- `habits` — Habit tracking
-- `calendar` — Calendar events
-- `contacts` — Contacts
-- `conversation_logs` — Conversation history
-
-## Deployment
-
-### Google Cloud Run
-
-```bash
-gcloud functions deploy telegram-webhook \
-  --runtime nodejs20 \
-  --trigger-http \
-  --allow-unauthenticated
-```
-
-Set these as Cloud Run secrets:
-- `TELEGRAM_BOT_TOKEN`
-- `GROQ_API_KEY`
-- All `FIREBASE_*` vars
+---
 
 ## Tech Stack
 
-- **Backend:** Node.js, Express
+- **Backend:** Node.js 20 (ESM), Express
+- **AI:** Groq (`llama-3.3-70b-versatile` + `whisper-large-v3-turbo`)
 - **Database:** Firebase Firestore
-- **Storage:** Firebase Cloud Storage
-- **AI:** Groq (with Claude fallback)
 - **Messaging:** Telegram Bot API
 - **Hosting:** Google Cloud Run
-
-## Future Features
-
-- [ ] Google Calendar integration
-- [ ] Gmail integration
-- [ ] Voice note transcription (Whisper)
-- [ ] PDF summarization
-- [ ] Weekly analytics dashboard
-- [ ] Habit analytics and charts
-- [ ] Birthday reminders
-- [ ] Location-based reminders
-- [ ] Notion integration
-- [ ] Weather updates
-
-## License
-
-MIT
+- **Dashboard:** React + Vite + Firebase Hosting
