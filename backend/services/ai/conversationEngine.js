@@ -44,6 +44,8 @@ const DASHBOARD_URL = process.env.DASHBOARD_URL || '';
 // ── Conversation prompt — free-form mode (no JSON, pure personality) ───────
 const CONVERSATION_PROMPT = `You are ${USER_NAME}'s personal chief-of-staff and close confidant. Direct, witty, occasionally dry. You pick sides ("go with A because…"), match energy, and understand Indian context. No filler ("How can I assist?", "Great question!", "Feel free to ask.").
 
+CRITICAL: Background context (food preferences, dietary habits, wellness priorities) is for YOUR awareness only — NEVER bring it up unprompted. If the user asks about tasks, talk about tasks. If they ask about expenses, talk expenses. Only mention dietary or wellness context if they explicitly ask about food, health, or wellness. Don't shoehorn personal details into unrelated responses.
+
 Short messages → 1-2 sentences. Questions → answer first. Advice → opinionated. Stress/venting → acknowledge before helping, don't be chirpy. Late night → warmer. Early morning → brief.
 
 RESPOND AS PLAIN TEXT. No JSON. No bullet lists unless the content genuinely needs structure.`;
@@ -60,7 +62,9 @@ RULES:
 - send_whatsapp: confirm draft in reply, no raw URL (system appends link).
 - WIN_CAPTURE_PENDING → store_win with exact words. Also emit store_win for natural wins ("finished X", "proud of Y").
 - FOLLOW-UP present → complete the goal, don't ask again.
-- QUICK CAPTURE: "200 chai"→expense | "gym done"→complete_habit | "mtg 3pm"→calendar event | "Riya bday May5"→store_memory`;
+- QUICK CAPTURE: "200 chai"→expense | "gym done"→complete_habit | "mtg 3pm"→calendar event | "Riya bday May5"→store_memory
+- MATH EXPENSES: "food 379+102+264" → calculate sum (745), log as ONE expense for that total. Reply: "Logged ₹745 under food (379+102+264)."
+- After logging an expense, if you have the monthly total available, add: "Monthly [category] total now ₹X."`;
 
 // Action schemas — only appended when message likely needs an action
 const ACTION_SCHEMAS = `ACTIONS (emit in "actions" array):
@@ -124,6 +128,7 @@ function classifyMessage(msg) {
   if (!m) return 'conversation';
   if (/^\d+[\s₹]/.test(m)) return 'action'; // "200 chai" → expense
   if (/\d+\s*rs\b/i.test(m)) return 'action'; // "food 300rs", "300rs", "300 rs"
+  if (/^\w+\s+\d+(\+\d+)+$/i.test(m)) return 'action'; // "food 379+102+264" → summed expense
   if (/^(add|create|remove|delete|set|save|log|spent|track)\b/i.test(m)) return 'action';
   if (/^(remind|schedule|plan|book|cancel)\b/i.test(m)) return 'action';
   if (/^(call|text|send|navigate|play|open)\b/i.test(m)) return 'action';
@@ -417,8 +422,12 @@ export class ConversationEngine {
       : 'SPENDING: none this month';
 
     // ── Memory ─────────────────────────────────────────────────────────────
-    const memBlk = this.selectMemories(memories, message)
-      .map(m => `- ${m.key || m.category}: ${m.value}`).join('\n') || '(none)';
+    const { background: bgMems, relevant: relMems } = this.selectMemories(memories, message);
+    const memBlk = relMems.map(m => `- ${m.key || m.category}: ${m.value}`).join('\n') || '(none)';
+    const bgBlk  = bgMems.length
+      ? 'BACKGROUND CONTEXT (use only when directly relevant, do NOT mention proactively):\n' +
+        bgMems.map(m => `- ${m.value}`).join('\n')
+      : null;
 
     // ── Proactive observations (cap at 5 to control token use) ────────────
     const observations = this.buildObservations(tasks, habits, expenseSummary, budgets, todayStr).slice(0, 5);
@@ -448,6 +457,7 @@ export class ConversationEngine {
       expenseBlock,
       journalLines ? `JOURNAL:\n${journalLines}` : null,
       `MEMORY:\n${memBlk}`,
+      bgBlk,
       summaryBlock,
       contactBlock,
       activeDoc ? activeDoc.trim() : null,
@@ -960,9 +970,9 @@ export class ConversationEngine {
   }
 
   selectMemories(memories, message, topN = 5) {
-    if (!memories.length) return [];
+    if (!memories.length) return { background: [], relevant: [] };
     const words = message.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-    const pinned = memories.filter(m => m.always);
+    const background = memories.filter(m => m.always);
     const rest = memories.filter(m => !m.always);
     const scored = rest.map(m => {
       const hay = `${m.key} ${m.value}`.toLowerCase();
@@ -970,8 +980,7 @@ export class ConversationEngine {
       return { m, score };
     });
     scored.sort((a, b) => b.score - a.score);
-    const slots = Math.max(0, topN - pinned.length);
-    return [...pinned, ...scored.slice(0, slots).map(s => s.m)];
+    return { background, relevant: scored.slice(0, topN).map(s => s.m) };
   }
 
   matchTask(tasks, matchText) {
@@ -1167,8 +1176,12 @@ export class ConversationEngine {
       }
     }
 
-    const memBlk = this.selectMemories(memories, message, 6)
-      .map(m => `- ${m.key || m.category}: ${m.value}`).join('\n');
+    const { background: bgMemsConv, relevant: relMemsConv } = this.selectMemories(memories, message, 6);
+    const memBlk = relMemsConv.map(m => `- ${m.key || m.category}: ${m.value}`).join('\n');
+    const bgBlkConv = bgMemsConv.length
+      ? 'BACKGROUND CONTEXT (use only when directly relevant, do NOT mention proactively):\n' +
+        bgMemsConv.map(m => `- ${m.value}`).join('\n')
+      : null;
 
     const quickStatus = await this.getQuickStatus(userId).catch(() => null);
     const timeCtx = this.getTimeContext();
@@ -1181,6 +1194,7 @@ export class ConversationEngine {
       `Current: ${timeCtx}`,
       quickStatus ? `Quick status: ${quickStatus}` : null,
       memBlk ? `About ${USER_NAME}:\n${memBlk}` : null,
+      bgBlkConv,
       convSummaryBlock,
       winContext || null,
       `Message: ${message}`

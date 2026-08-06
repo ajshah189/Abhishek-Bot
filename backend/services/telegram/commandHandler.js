@@ -108,6 +108,12 @@ export class CommandHandler {
         case 'backup':
           return await this.handleBackup(userId, chatId);
 
+        case 'forget':
+          return await this.handleForget(userId, args);
+
+        case 'forgetall':
+          return await this.handleForgetAll(userId);
+
         default:
           return `Unknown command: ${command}. Type /help for available commands.`;
       }
@@ -312,6 +318,8 @@ Contacts
 
 Utilities
 /clear - Reset conversation memory
+/forget [topic] - Delete memories matching a keyword
+/forgetall - Wipe all stored memories
 /settings - Manage settings
 /usage - Token usage today (API budget)
 /backup - Export all your data as JSON
@@ -658,6 +666,28 @@ Contact must be saved for calling/texting. Say "save [name]'s number [number]" f
   async handleBackup(userId, chatId) {
     const { backupService } = await import('../backup/backupService.js');
     return await backupService.sendBackupToUser(userId, chatId);
+  }
+
+  async handleForget(userId, args) {
+    if (!args || !args.length) return 'Usage: /forget [topic] — e.g., /forget wellness';
+    const { memoryService } = await import('../memory/memoryService.js');
+    const keyword = args.join(' ').toLowerCase();
+    const memories = await memoryService.getUserMemories(userId);
+    const matches = memories.filter(m =>
+      (m.key || '').toLowerCase().includes(keyword) ||
+      (m.value || '').toLowerCase().includes(keyword)
+    );
+    if (!matches.length) return `No memories found matching "${keyword}".`;
+    for (const m of matches) await memoryService.delete(m.id);
+    return `Forgot ${matches.length} memor${matches.length === 1 ? 'y' : 'ies'} about "${keyword}".`;
+  }
+
+  async handleForgetAll(userId) {
+    const { memoryService } = await import('../memory/memoryService.js');
+    const memories = await memoryService.getUserMemories(userId);
+    if (!memories.length) return 'No memories to clear.';
+    for (const m of memories) await memoryService.delete(m.id);
+    return `All ${memories.length} memories cleared. Fresh start.`;
   }
 
   handleSettings() {
