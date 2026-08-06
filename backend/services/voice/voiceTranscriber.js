@@ -12,6 +12,9 @@ export class VoiceTranscriber {
       const form = new FormData();
       form.append('file', Buffer.from(buffer), { filename });
       form.append('model', 'whisper-large-v3-turbo');
+      form.append('language', 'en');
+      form.append('response_format', 'text');
+      form.append('prompt', 'Personal assistant command. Common words: task, expense, food, travel, calendar, navigate, whatsapp, timer, reminder, habit, budget, contact, Riya, Jayesh, Prakshal');
 
       const raw = await axios.post(
         'https://api.groq.com/openai/v1/audio/transcriptions',
@@ -24,7 +27,7 @@ export class VoiceTranscriber {
         }
       );
 
-      const text = raw.data?.text?.trim();
+      const text = (typeof raw.data === 'string' ? raw.data : raw.data?.text)?.trim();
       logger.info('Audio buffer transcribed', { filename, length: text?.length || 0 });
       return text || null;
     } catch (error) {
@@ -49,6 +52,9 @@ export class VoiceTranscriber {
       const form = new FormData();
       form.append('file', Buffer.from(audioRes.data), { filename: 'voice.ogg' });
       form.append('model', 'whisper-large-v3-turbo');
+      form.append('language', 'en');
+      form.append('response_format', 'text');
+      form.append('prompt', 'Personal assistant command. Common words: task, expense, food, travel, calendar, navigate, whatsapp, timer, reminder, habit, budget, contact, Riya, Jayesh, Prakshal');
 
       const raw = await axios.post(
         'https://api.groq.com/openai/v1/audio/transcriptions',
@@ -61,7 +67,7 @@ export class VoiceTranscriber {
         }
       );
 
-      const text = raw.data?.text?.trim();
+      const text = (typeof raw.data === 'string' ? raw.data : raw.data?.text)?.trim();
       logger.info('Voice transcribed', { length: text?.length || 0 });
       return text || null;
     } catch (error) {
